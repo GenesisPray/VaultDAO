@@ -506,6 +506,12 @@ pub enum VaultError {
     // Issue #1748: Storage schema versioning
     /// Stored schema version does not match this contract build; call `migrate`
     SchemaVersionMismatch = 1140,
+
+    // =========================================================
+    // Retry configuration validation
+    // =========================================================
+    /// Retry configuration is invalid (e.g. `initial_backoff_ledgers` is zero)
+    RetryConfigInvalid = 1141,
 }
 
 // Compatibility markers for CI source checks:
