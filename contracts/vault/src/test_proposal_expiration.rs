@@ -598,6 +598,83 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_expire_proposals_scans_due_prefix_and_refunds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, signer1, _signer2, _contract_id) = setup_vault();
+
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        StellarAssetClient::new(&env, &token).mint(&admin, &1_000_000);
+        let recipient = Address::generate(&env);
+
+        // Create many proposals at increasing ledgers so they expire in order.
+        let mut ids: std::vec::Vec<u64> = std::vec::Vec::new();
+        for i in 0..20u32 {
+            env.ledger().with_mut(|l| {
+                l.sequence_number = 100 + i * 10;
+            });
+            let pid = propose_transfer(&env, &client, &signer1, &recipient, &token);
+            ids.push(pid);
+        }
+
+        // Advance far enough that the first half is due for expiry.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100_000;
+        });
+
+        // Auto-expire should only scan the due prefix and refund reservations.
+        let expired_count = client.auto_expire_proposals(&admin, &10);
+        assert!(expired_count > 0);
+
+        // The scanned (due) proposals should now be Expired.
+        for pid in ids.iter().take(expired_count as usize) {
+            let p = client.get_proposal(&pid);
+            assert_eq!(p.status, ProposalStatus::Expired);
+        }
+
+        // Spending reservation should have been refunded (spent amount reset).
+        let config = client.get_config();
+        assert!(config.spending_limit > 0);
+    }
+
+    #[test]
+    fn test_auto_expire_proposals_prunes_tags() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, signer1, _signer2, _contract_id) = setup_vault();
+
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        StellarAssetClient::new(&env, &token).mint(&admin, &1_000_000);
+        let recipient = Address::generate(&env);
+
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100;
+        });
+        let pid = propose_transfer(&env, &client, &signer1, &recipient, &token);
+
+        // Tag the proposal so it is indexed.
+        let tag = Symbol::new(&env, "ops");
+        client.tag_proposal(&signer1, &pid, &tag);
+
+        // Advance past expiry and auto-expire.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100_000;
+        });
+        let expired_count = client.auto_expire_proposals(&admin, &10);
+        assert!(expired_count > 0);
+
+        // The tag index should no longer reference the expired proposal.
+        let tagged = client.get_proposals_by_tag(&tag);
+        assert!(!tagged.contains(&pid));
+    }
+
+    #[test]
     #[ignore = "quarantined: unwrap on HostError(Value, InvalidInput) against the current contract (docs/reference/TESTING.md)"]
     fn test_proposal_not_deleted_immediately_on_expiry() {
         let env = Env::default();

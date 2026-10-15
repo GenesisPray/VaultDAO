@@ -169,6 +169,61 @@ fn scenario_storage_write(context: &Context) {
     client.update_threshold(&context.admin, &2);
 }
 
+fn seed_proposals(context: &Context, count: u32) {
+    for _ in 0..count {
+        propose(context);
+    }
+}
+
+fn scenario_list_proposal_ids(context: &Context) {
+    let client = VaultDAOClient::new(&context.env, &context.contract_id);
+    let _ids = client.list_proposal_ids(&0, &20);
+}
+
+fn scenario_get_executable_proposals(context: &Context) {
+    let client = VaultDAOClient::new(&context.env, &context.contract_id);
+    let _ids = client.get_executable_proposals(&0, &20);
+}
+
+fn scenario_auto_expire_proposals(context: &Context) {
+    let client = VaultDAOClient::new(&context.env, &context.contract_id);
+    let _expired = client.auto_expire_proposals(&context.admin, &20);
+}
+
+fn benchmark_proposals(
+    name: &'static str,
+    storage_profile: &'static str,
+    proposal_count: u32,
+    operation: fn(&Context),
+) -> ResultRow {
+    let mut cpu_samples = std::vec::Vec::with_capacity(SAMPLES);
+    let mut memory_samples = std::vec::Vec::with_capacity(SAMPLES);
+    let mut wall_samples = std::vec::Vec::with_capacity(SAMPLES);
+
+    for _ in 0..SAMPLES {
+        let mut context = context();
+        context.env.cost_estimate().budget().reset_unlimited();
+        seed_proposals(&context, proposal_count);
+
+        context.env.cost_estimate().budget().reset_default();
+        let started = Instant::now();
+        operation(&context);
+        wall_samples.push(started.elapsed().as_nanos() as u64);
+
+        let budget = context.env.cost_estimate().budget();
+        cpu_samples.push(budget.cpu_instruction_cost());
+        memory_samples.push(budget.memory_bytes_cost());
+    }
+
+    ResultRow {
+        name,
+        storage_profile,
+        cpu_instructions: median(&mut cpu_samples),
+        memory_bytes: median(&mut memory_samples),
+        wall_time_ns: median(&mut wall_samples),
+    }
+}
+
 fn median(values: &mut [u64]) -> u64 {
     values.sort_unstable();
     values[values.len() / 2]
@@ -238,6 +293,60 @@ fn main() {
         benchmark("audit_archive_100", "read_write", AUDIT_SEED, scenario_archive),
         benchmark("storage_read", "read_only", AUDIT_SEED, scenario_storage_read),
         benchmark("storage_write", "write", 0, scenario_storage_write),
+        benchmark_proposals(
+            "list_proposal_ids_100",
+            "read_only",
+            100,
+            scenario_list_proposal_ids,
+        ),
+        benchmark_proposals(
+            "list_proposal_ids_1000",
+            "read_only",
+            1_000,
+            scenario_list_proposal_ids,
+        ),
+        benchmark_proposals(
+            "list_proposal_ids_5000",
+            "read_only",
+            5_000,
+            scenario_list_proposal_ids,
+        ),
+        benchmark_proposals(
+            "get_executable_proposals_100",
+            "read_only",
+            100,
+            scenario_get_executable_proposals,
+        ),
+        benchmark_proposals(
+            "get_executable_proposals_1000",
+            "read_only",
+            1_000,
+            scenario_get_executable_proposals,
+        ),
+        benchmark_proposals(
+            "get_executable_proposals_5000",
+            "read_only",
+            5_000,
+            scenario_get_executable_proposals,
+        ),
+        benchmark_proposals(
+            "auto_expire_proposals_100",
+            "read_write",
+            100,
+            scenario_auto_expire_proposals,
+        ),
+        benchmark_proposals(
+            "auto_expire_proposals_1000",
+            "read_write",
+            1_000,
+            scenario_auto_expire_proposals,
+        ),
+        benchmark_proposals(
+            "auto_expire_proposals_5000",
+            "read_write",
+            5_000,
+            scenario_auto_expire_proposals,
+        ),
     ];
 
     let commit = std::env::var("GITHUB_SHA").unwrap_or_else(|_| "local".to_string());

@@ -2589,6 +2589,10 @@ pub struct MultiPhaseProposal {
     pub phases: Vec<ProposalPhase>,
     /// Index of last successfully executed phase (-1 if none)
     pub last_executed_phase: i32,
+    /// Sum of the amounts across all phases, cached at creation time so
+    /// approval-time spending-limit, timelock, and impact-scoring checks can
+    /// see the total committed value without re-walking the phase list.
+    pub total_amount: i128,
 }
 
 // ============================================================================

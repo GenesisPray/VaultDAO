@@ -606,6 +606,30 @@ pub fn get_vesting_ids_paginated(env: &Env, offset: u64, limit: u64) -> Vec<u64>
     ids
 }
 
+/// One page of vesting schedule IDs in ascending ID order, starting strictly
+/// after `start_after_id` (#1744).
+///
+/// Cursor-based counterpart to `get_vesting_ids_paginated`; pass the last ID
+/// received (or 0 to start from the beginning).
+pub fn get_vesting_ids_after(env: &Env, start_after_id: u64, limit: u64) -> Vec<u64> {
+    let cap: u64 = if limit == 0 || limit > 100 { 100 } else { limit };
+    // Read the counter without consuming it: `next_vesting_id` increments.
+    let next_id: u64 = env.storage().instance().get(&VestingKey::NextId).unwrap_or(1);
+    let mut ids: Vec<u64> = Vec::new(env);
+
+    let start = start_after_id.saturating_add(1);
+    for id in start..next_id {
+        if !env.storage().persistent().has(&VestingKey::Schedule(id)) {
+            continue;
+        }
+        ids.push_back(id);
+        if ids.len() as u64 >= cap {
+            break;
+        }
+    }
+    ids
+}
+
 fn get_reserve(env: &Env, key: &ReserveKey) -> i128 {
     env.storage().persistent().get(key).unwrap_or(0)
 }
@@ -957,6 +981,38 @@ pub fn get_proposal_ids_paginated(env: &Env, offset: u64, limit: u64) -> Vec<u64
     ids
 }
 
+/// Return a page of existing proposal IDs in ascending creation order,
+/// starting strictly after `start_after_id`.
+///
+/// This is the cursor-based counterpart to `get_proposal_ids_paginated`:
+/// callers pass the last ID they received (or 0 to start from the
+/// beginning) and receive the next `limit` IDs. Cursor pagination is
+/// stable under concurrent inserts, unlike offset pagination.
+///
+/// # Arguments
+/// * `start_after_id` - Return IDs strictly greater than this value (0 = from start).
+/// * `limit`          - Maximum number of IDs to return. Capped at 100 internally.
+///
+/// # Returns
+/// A vector of proposal IDs in ascending order.
+pub fn get_proposal_ids_after(env: &Env, start_after_id: u64, limit: u64) -> Vec<u64> {
+    let cap: u64 = if limit > 100 { 100 } else { limit };
+    let next_id = get_next_proposal_id(env);
+    let mut ids: Vec<u64> = Vec::new(env);
+
+    let start = start_after_id.saturating_add(1);
+    for id in start..next_id {
+        if !env.storage().persistent().has(&DataKey::Proposal(id)) {
+            continue;
+        }
+        ids.push_back(id);
+        if ids.len() as u64 >= cap {
+            break;
+        }
+    }
+    ids
+}
+
 // ============================================================================
 // TimelockReady Index  (Issue #1640)
 // ============================================================================
@@ -1295,6 +1351,36 @@ pub fn get_recurring_payment_ids_paginated(env: &Env, offset: u64, limit: u64) -
         }
         if skipped < offset {
             skipped += 1;
+            continue;
+        }
+        ids.push_back(id);
+        if ids.len() as u64 >= cap {
+            break;
+        }
+    }
+    ids
+}
+
+/// Return a page of existing recurring payment IDs in ascending creation
+/// order, starting strictly after `start_after_id`.
+///
+/// Cursor-based counterpart to `get_recurring_payment_ids_paginated`; pass the
+/// last ID received (or 0 to start from the beginning).
+///
+/// # Arguments
+/// * `start_after_id` - Return IDs strictly greater than this value (0 = from start).
+/// * `limit`          - Maximum number of IDs to return. Capped at 100 internally.
+///
+/// # Returns
+/// A vector of recurring payment IDs in ascending order.
+pub fn get_recurring_payment_ids_after(env: &Env, start_after_id: u64, limit: u64) -> Vec<u64> {
+    let cap: u64 = if limit > 100 { 100 } else { limit };
+    let next_id = get_next_recurring_id(env);
+    let mut ids: Vec<u64> = Vec::new(env);
+
+    let start = start_after_id.saturating_add(1);
+    for id in start..next_id {
+        if !env.storage().persistent().has(&DataKey::Recurring(id)) {
             continue;
         }
         ids.push_back(id);
