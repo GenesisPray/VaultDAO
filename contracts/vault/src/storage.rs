@@ -219,6 +219,8 @@ pub enum DataKey {
     ForceRotationReq(u64),
     /// Next force-rotation request ID -> u64
     NextForceRotationId,
+    /// Addresses that have voted to reject a proposal -> Vec<Address>
+    RejectionVotes(u64),
 }
 
 #[contracttype(export = false)]
@@ -456,6 +458,8 @@ pub enum FeatureKey {
     KeeperHooks(u32),
     /// Total keeper hook count across all event types -> u32
     KeeperHookCount,
+    /// Number of rejection votes required to reject a proposal -> u32
+    RejectionThreshold,
 }
 
 /// TTL constants (in ledgers, ~5 seconds each)
@@ -500,6 +504,66 @@ pub fn get_full_quorum_threshold(env: &Env) -> i128 {
         .get::<_, Config>(&DataKey::Config)
         .map(|config| config.full_quorum_threshold)
         .unwrap_or(0)
+}
+
+// ============================================================================
+// Proposal Rejection Votes
+// ============================================================================
+
+/// Default number of rejection votes required to reject a proposal.
+pub const DEFAULT_REJECTION_THRESHOLD: u32 = 1;
+
+/// Addresses that have voted to reject `proposal_id`, in vote order.
+pub fn get_rejection_votes(env: &Env, proposal_id: u64) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RejectionVotes(proposal_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Persist the rejection-vote list for `proposal_id`.
+pub fn set_rejection_votes(env: &Env, proposal_id: u64, votes: &Vec<Address>) {
+    let key = DataKey::RejectionVotes(proposal_id);
+    env.storage().persistent().set(&key, votes);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PROPOSAL_TTL / 2, PROPOSAL_TTL);
+}
+
+/// Record `voter`'s rejection vote for `proposal_id`.
+///
+/// Returns `true` if the vote was newly recorded, `false` if the address had
+/// already voted to reject this proposal.
+pub fn add_rejection_vote(env: &Env, proposal_id: u64, voter: &Address) -> bool {
+    let mut votes = get_rejection_votes(env, proposal_id);
+    if votes.contains(voter) {
+        return false;
+    }
+    votes.push_back(voter.clone());
+    set_rejection_votes(env, proposal_id, &votes);
+    true
+}
+
+/// Remove any stored rejection votes for `proposal_id`.
+pub fn clear_rejection_votes(env: &Env, proposal_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::RejectionVotes(proposal_id));
+}
+
+/// Configured number of rejection votes needed to reject a proposal.
+pub fn get_rejection_threshold(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&FeatureKey::RejectionThreshold)
+        .unwrap_or(DEFAULT_REJECTION_THRESHOLD)
+}
+
+/// Set the number of rejection votes needed to reject a proposal.
+pub fn set_rejection_threshold(env: &Env, threshold: u32) {
+    env.storage()
+        .instance()
+        .set(&FeatureKey::RejectionThreshold, &threshold);
 }
 
 // ============================================================================
