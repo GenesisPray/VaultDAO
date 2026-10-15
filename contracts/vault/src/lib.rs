@@ -2744,6 +2744,14 @@ impl VaultDAO {
     /// Allows a signer to delegate their voting power to another signer for a specified period.
     /// The delegation chain is validated to prevent circular delegations and excessive depth.
     ///
+    /// # Pause behaviour
+    /// Delegation configuration is intentionally **not** gated by the emergency pause.
+    /// `delegate_voting_power` (and its alias `delegate_vote`) move no funds, and
+    /// signers must be able to (re)configure or unwind delegations while the vault
+    /// is paused so governance state can be restored. Only the four core vote entry
+    /// points (`approve_proposal`, `abstain_proposal`, `change_vote`, and proposal
+    /// execution) are gated by the pause.
+    ///
     /// # Arguments
     /// * `delegator` - The signer delegating their voting power (must authorize)
     /// * `delegate` - The signer receiving the delegated voting power
@@ -2848,6 +2856,10 @@ impl VaultDAO {
     }
 
     /// Compatibility alias for clients using the original delegation method.
+    ///
+    /// Like [`Self::delegate_voting_power`], this is intentionally **not** gated
+    /// by the emergency pause: it moves no funds and is needed to unwind/restore
+    /// governance state while the vault is paused.
     pub fn delegate_vote(
         env: Env,
         delegator: Address,
@@ -18353,6 +18365,12 @@ impl VaultDAO {
         Ok(())
     }
 
+    /// Cast a vote on behalf of a delegator under a scoped delegation.
+    ///
+    /// # Pause behaviour
+    /// Scoped-delegate voting is intentionally **not** gated by the emergency
+    /// pause. It moves no funds and is needed to unwind/restore governance state
+    /// while the vault is paused; only the four core vote entry points are gated.
     pub fn vote_as_delegate(
         env: Env,
         delegate: Address,
