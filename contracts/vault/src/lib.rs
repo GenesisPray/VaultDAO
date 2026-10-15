@@ -4422,6 +4422,21 @@ impl VaultDAO {
         storage::get_proposal_ids_paginated(&env, offset, limit)
     }
 
+    /// List proposal IDs strictly greater than `after_id`, in ascending order (paginated).
+    ///
+    /// Cursor-based counterpart of `list_proposal_ids`: pass the last ID from the
+    /// previous page as `after_id` (use 0 for the first page). Unlike offset
+    /// pagination, entries created between calls cannot shift the window.
+    /// `limit` is capped at 100 per call to bound gas usage.
+    ///
+    /// # Arguments
+    /// * `after_id` - Return only IDs greater than this (0 for the first page).
+    /// * `limit`    - Maximum number of IDs to return (capped at 100).
+    pub fn list_proposal_ids_after(env: Env, after_id: u64, limit: u64) -> Vec<u64> {
+        storage::extend_instance_ttl(&env);
+        storage::get_proposal_ids_after(&env, after_id, limit)
+    }
+
     /// List full proposal objects in ascending creation order (paginated).
     ///
     /// Equivalent to calling `list_proposal_ids` and then `get_proposal` for
@@ -5834,6 +5849,21 @@ impl VaultDAO {
         executable
     }
 
+    /// Return proposal IDs that are currently executable, cursor-paginated.
+    ///
+    /// Cursor-based counterpart of `get_executable_proposals`: scans proposal IDs
+    /// strictly greater than `after_id` and returns up to `limit` executable ones
+    /// (capped at 100). Pass the last returned ID as `after_id` to fetch the next
+    /// page; use 0 for the first page.
+    ///
+    /// # Arguments
+    /// * `after_id` - Return only IDs greater than this (0 for the first page).
+    /// * `limit`    - Maximum number of IDs to return (capped at 100).
+    pub fn get_executable_proposals_paginated(env: Env, after_id: u64, limit: u64) -> Vec<u64> {
+        storage::extend_instance_ttl(&env);
+        storage::get_executable_proposals_paginated(&env, after_id, limit)
+    }
+
     // ========================================================================
     // Recurring Payments
     // ========================================================================
@@ -6819,6 +6849,20 @@ impl VaultDAO {
     pub fn list_recurring_payment_ids(env: Env, offset: u64, limit: u64) -> Vec<u64> {
         storage::extend_instance_ttl(&env);
         storage::get_recurring_payment_ids_paginated(&env, offset, limit)
+    }
+
+    /// List recurring payment IDs strictly greater than `after_id`, in ascending order (paginated).
+    ///
+    /// Cursor-based counterpart of `list_recurring_payment_ids`: pass the last ID
+    /// from the previous page as `after_id` (use 0 for the first page).
+    /// `limit` is capped at 100 per call to bound gas usage.
+    ///
+    /// # Arguments
+    /// * `after_id` - Return only IDs greater than this (0 for the first page).
+    /// * `limit`    - Maximum number of IDs to return (capped at 100).
+    pub fn list_recurring_payment_ids_after(env: Env, after_id: u64, limit: u64) -> Vec<u64> {
+        storage::extend_instance_ttl(&env);
+        storage::get_recurring_payment_ids_after(&env, after_id, limit)
     }
 
     /// List recurring payments with pagination
@@ -17975,6 +18019,20 @@ impl VaultDAO {
     pub fn list_vesting_ids(env: Env, offset: u64, limit: u64) -> Vec<u64> {
         storage::extend_instance_ttl(&env);
         storage::get_vesting_ids_paginated(&env, offset, limit)
+    }
+
+    /// List vesting schedule IDs strictly greater than `after_id`, in ascending order (paginated).
+    ///
+    /// Cursor-based counterpart of `list_vesting_ids`: pass the last ID from the
+    /// previous page as `after_id` (use 0 for the first page).
+    /// `limit` is capped at 100 per call to bound gas usage.
+    ///
+    /// # Arguments
+    /// * `after_id` - Return only IDs greater than this (0 for the first page).
+    /// * `limit`    - Maximum number of IDs to return (capped at 100).
+    pub fn list_vesting_ids_after(env: Env, after_id: u64, limit: u64) -> Vec<u64> {
+        storage::extend_instance_ttl(&env);
+        storage::get_vesting_ids_after(&env, after_id, limit)
     }
 
     pub fn claim_vested_tokens(
