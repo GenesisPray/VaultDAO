@@ -386,3 +386,38 @@ fn test_bulk_add_tags_updates_index() {
     assert_eq!(results.len(), 1);
     assert_eq!(results.get(0).unwrap(), proposal_id);
 }
+
+// ============================================================================
+// auto_expire_proposals — tag index & spending counter cleanup
+// ============================================================================
+
+#[test]
+fn test_auto_expire_clears_tag_index_and_restores_spending() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, token, vault) = setup(&env);
+
+    // Create a proposal with a reserved spending bucket and a tag.
+    let proposal_id = create_proposal(&env, &client, &admin, &token, &vault);
+    client.add_proposal_tag(&admin, &proposal_id, &Symbol::new(&env, "expiring"));
+
+    // The proposal reserves 100 against the daily/weekly spending counters.
+    let daily_before = client.get_daily_spent(&token);
+    let weekly_before = client.get_weekly_spent(&token);
+
+    // Advance past the approval timeout so the proposal becomes expirable.
+    env.ledger().set_sequence_number(env.ledger().sequence() + 200_000);
+
+    client.auto_expire_proposals(&admin);
+
+    // Tag index must no longer reference the expired proposal.
+    let results = client.get_proposals_by_tag(&Symbol::new(&env, "expiring"), &0, &50);
+    assert_eq!(results.len(), 0);
+
+    // Reserved spending must be credited back to the daily/weekly counters.
+    let daily_after = client.get_daily_spent(&token);
+    let weekly_after = client.get_weekly_spent(&token);
+    assert_eq!(daily_after, daily_before - 100);
+    assert_eq!(weekly_after, weekly_before - 100);
+}
