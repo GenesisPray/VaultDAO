@@ -1672,7 +1672,14 @@ impl VaultDAO {
             }
 
             if proposal.approvals.contains(&voter) {
-                return Err(VaultError::AlreadyApproved);
+                events::emit_delegated_vote_skipped(
+                    &env,
+                    proposal_id,
+                    &voter,
+                    &signer,
+                    Symbol::new(&env, "approved"),
+                );
+                continue;
             }
 
             // Prevent double-abstaining

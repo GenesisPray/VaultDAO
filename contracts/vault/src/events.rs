@@ -164,6 +164,26 @@ pub fn emit_delegated_vote(
     );
 }
 
+/// Emit when a delegated vote is skipped for a voter.
+///
+/// # Arguments
+/// * `proposal_id` - The proposal the delegated vote applied to.
+/// * `voter` - The skipped voter (the delegator whose vote was skipped).
+/// * `signer` - The acting signer (the delegate) that skipped the vote.
+/// * `reason` - Why the vote was skipped, e.g. `abstained` or `approved`.
+pub fn emit_delegated_vote_skipped(
+    env: &Env,
+    proposal_id: u64,
+    voter: &Address,
+    signer: &Address,
+    reason: &Symbol,
+) {
+    env.events().publish(
+        (Symbol::new(env, "delegated_vote_skipped"), proposal_id),
+        (voter.clone(), signer.clone(), reason.clone()),
+    );
+}
+
 pub fn emit_proposal_scheduled(
     env: &Env,
     proposal_id: u64,
