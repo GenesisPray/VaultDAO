@@ -962,6 +962,120 @@ pub fn get_proposal_ids_paginated(env: &Env, offset: u64, limit: u64) -> Vec<u64
 }
 
 // ============================================================================
+// Pending Expiry Index
+// ============================================================================
+
+/// Insert `proposal_id` into the sorted pending-expiry index keyed by `expiry`.
+///
+/// The index is a `Vec<(u64, u64)>` of `(expiry_ledger, proposal_id)` pairs kept
+/// in ascending order of `expiry_ledger`, so the front of the vector always
+/// holds the soonest-expiring proposal. Insertion is idempotent: re-inserting
+/// the same `(expiry, proposal_id)` pair is a no-op.
+pub fn pending_expiry_index_insert(env: &Env, expiry: u64, proposal_id: u64) {
+    let mut index: Vec<(u64, u64)> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingExpiryIndex)
+        .unwrap_or_else(|| Vec::new(env));
+
+    // Idempotency: skip if this exact pair is already present.
+    for entry in index.iter() {
+        if entry == (expiry, proposal_id) {
+            return;
+        }
+    }
+
+    // Find the first position whose expiry is strictly greater than `expiry`,
+    // preserving insertion order among equal expiries.
+    let mut pos: u32 = index.len();
+    for i in 0..index.len() {
+        if let Some((e, _)) = index.get(i) {
+            if e > expiry {
+                pos = i;
+                break;
+            }
+        }
+    }
+
+    // Rebuild the vector with the new entry spliced in at `pos`.
+    let mut updated: Vec<(u64, u64)> = Vec::new(env);
+    for i in 0..index.len() {
+        if i == pos {
+            updated.push_back((expiry, proposal_id));
+        }
+        if let Some(entry) = index.get(i) {
+            updated.push_back(entry);
+        }
+    }
+    if pos >= index.len() {
+        updated.push_back((expiry, proposal_id));
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::PendingExpiryIndex, &updated);
+    env.storage().persistent().extend_ttl(
+        &DataKey::PendingExpiryIndex,
+        PROPOSAL_TTL / 2,
+        PROPOSAL_TTL,
+    );
+}
+
+/// Remove every entry for `proposal_id` from the pending-expiry index.
+pub fn pending_expiry_index_remove(env: &Env, proposal_id: u64) {
+    let index: Vec<(u64, u64)> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingExpiryIndex)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut updated: Vec<(u64, u64)> = Vec::new(env);
+    for entry in index.iter() {
+        if entry.1 != proposal_id {
+            updated.push_back(entry);
+        }
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::PendingExpiryIndex, &updated);
+    if !updated.is_empty() {
+        env.storage().persistent().extend_ttl(
+            &DataKey::PendingExpiryIndex,
+            PROPOSAL_TTL / 2,
+            PROPOSAL_TTL,
+        );
+    }
+}
+
+/// Return up to `max_scan` proposal IDs whose expiry is at or before
+/// `current_ledger`, taken from the front of the sorted index.
+///
+/// The index is sorted ascending by expiry, so scanning stops at the first
+/// entry that is not yet due. Entries are returned in expiry order; the index
+/// itself is not mutated (callers prune via `pending_expiry_index_remove`).
+pub fn pending_expiry_index_due_prefix(env: &Env, current_ledger: u64, max_scan: u32) -> Vec<u64> {
+    let index: Vec<(u64, u64)> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingExpiryIndex)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut due: Vec<u64> = Vec::new(env);
+    for entry in index.iter() {
+        if due.len() >= max_scan {
+            break;
+        }
+        let (expiry, proposal_id) = entry;
+        if expiry > current_ledger {
+            break;
+        }
+        due.push_back(proposal_id);
+    }
+    due
+}
+
+// ============================================================================
 // TimelockReady Index  (Issue #1640)
 // ============================================================================
 

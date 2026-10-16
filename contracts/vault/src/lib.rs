@@ -1571,6 +1571,7 @@ impl VaultDAO {
                 );
             }
             proposal.status = ProposalStatus::Expired;
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
             storage::metrics_on_expiry(&env);
             events::emit_proposal_expired(&env, proposal_id, proposal.expires_at);
@@ -1589,6 +1590,7 @@ impl VaultDAO {
         // Check voting deadline
         if proposal.voting_deadline > 0 && current_ledger > proposal.voting_deadline {
             proposal.status = ProposalStatus::Rejected;
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
             storage::metrics_on_rejection(&env);
             Self::slash_insurance_on_rejection(&env, &proposal);
@@ -1611,6 +1613,9 @@ impl VaultDAO {
             previous_quorum_votes,
         );
 
+        if proposal.status != ProposalStatus::Pending {
+            storage::pending_expiry_index_remove(&env, proposal_id);
+        }
         storage::set_proposal(&env, &proposal);
         storage::extend_instance_ttl(&env);
         storage::create_audit_entry(&env, AuditAction::ApproveProposal, &signer, proposal_id);
@@ -1736,6 +1741,7 @@ impl VaultDAO {
                 );
             }
             proposal.status = ProposalStatus::Expired;
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
             storage::metrics_on_expiry(&env);
             events::emit_proposal_expired(&env, proposal_id, proposal.expires_at);
@@ -1754,6 +1760,7 @@ impl VaultDAO {
         // Check voting deadline
         if proposal.voting_deadline > 0 && current_ledger > proposal.voting_deadline {
             proposal.status = ProposalStatus::Rejected;
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
             storage::metrics_on_rejection(&env);
             Self::slash_insurance_on_rejection(&env, &proposal);
@@ -1776,6 +1783,9 @@ impl VaultDAO {
             previous_quorum_votes,
         );
 
+        if proposal.status != ProposalStatus::Pending {
+            storage::pending_expiry_index_remove(&env, proposal_id);
+        }
         storage::set_proposal(&env, &proposal);
         storage::extend_instance_ttl(&env);
         storage::create_audit_entry(&env, AuditAction::AbstainProposal, &signer, proposal_id);
@@ -1816,6 +1826,7 @@ impl VaultDAO {
         }
 
         proposal.status = ProposalStatus::Rejected;
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &proposal);
 
         storage::metrics_on_rejection(&env);
@@ -1952,6 +1963,9 @@ impl VaultDAO {
             previous_quorum_votes,
         );
 
+        if proposal.status != ProposalStatus::Pending {
+            storage::pending_expiry_index_remove(&env, proposal_id);
+        }
         storage::set_proposal(&env, &proposal);
         storage::extend_instance_ttl(&env);
 
@@ -2064,6 +2078,7 @@ impl VaultDAO {
             }
             proposal.status = ProposalStatus::Expired;
             storage::tag_index_prune_proposal(&env, &proposal.tags, proposal_id);
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
             storage::metrics_on_expiry(&env);
             events::emit_proposal_expired(&env, proposal_id, proposal.expires_at);
@@ -2103,6 +2118,7 @@ impl VaultDAO {
             }
             proposal.status = ProposalStatus::Expired;
             storage::tag_index_prune_proposal(&env, &proposal.tags, proposal_id);
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
             storage::metrics_on_expiry(&env);
             events::emit_execution_window_expired(
@@ -2219,6 +2235,7 @@ impl VaultDAO {
                 // Update proposal status
                 proposal.status = ProposalStatus::Executed;
                 proposal.execution_ledger = current_ledger;
+                storage::pending_expiry_index_remove(&env, proposal_id);
                 storage::set_proposal(&env, &proposal);
                 storage::extend_instance_ttl(&env);
 
@@ -2393,6 +2410,7 @@ impl VaultDAO {
         if retry_state.retry_count >= config.retry_config.max_retries {
             let mut expired = proposal;
             expired.status = ProposalStatus::Expired;
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &expired);
             events::emit_retries_exhausted(&env, proposal_id, retry_state.retry_count);
 
@@ -2708,6 +2726,7 @@ impl VaultDAO {
                 let mut proposal = storage::get_proposal(&env, pid).unwrap(); // validated above
                 proposal.status = ProposalStatus::Executed;
                 proposal.execution_ledger = env.ledger().sequence() as u64;
+                storage::pending_expiry_index_remove(&env, pid);
                 storage::set_proposal(&env, &proposal);
                 executed_transfers.push_back((pid, token_addr.clone(), recipient.clone(), amount));
                 executed_count += 1;
@@ -3076,6 +3095,7 @@ impl VaultDAO {
         }
 
         proposal.status = ProposalStatus::Vetoed;
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &proposal);
         storage::remove_from_priority_queue(&env, proposal.priority.clone() as u32, proposal_id);
         storage::extend_instance_ttl(&env);
@@ -3259,6 +3279,7 @@ impl VaultDAO {
 
         if is_rejection {
             proposal.status = ProposalStatus::Rejected;
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
             storage::remove_from_priority_queue(
                 &env,
@@ -3304,6 +3325,7 @@ impl VaultDAO {
             );
 
             proposal.status = ProposalStatus::Cancelled;
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
 
             storage::remove_from_priority_queue(
@@ -3558,6 +3580,7 @@ impl VaultDAO {
         proposal.status = ProposalStatus::Pending;
         proposal.unlock_ledger = 0;
 
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &proposal);
         storage::add_amendment_record(&env, &amendment);
 
@@ -4758,6 +4781,7 @@ impl VaultDAO {
         token::transfer(env, &proposal.token, &proposal.recipient, proposal.amount);
 
         proposal.status = ProposalStatus::Executed;
+        storage::pending_expiry_index_remove(env, proposal_id);
         storage::set_proposal(env, &proposal);
         storage::extend_instance_ttl(env);
 
@@ -5026,6 +5050,7 @@ impl VaultDAO {
                         if age > config.approval_timeout_ledgers {
                             // Expire the proposal
                             proposal.status = ProposalStatus::Expired;
+                            storage::pending_expiry_index_remove(&env, proposal_id);
                             storage::set_proposal(&env, &proposal);
                             expired_count += 1;
 
@@ -8733,6 +8758,7 @@ impl VaultDAO {
             // Skip if expired
             if current_ledger > proposal.expires_at {
                 proposal.status = ProposalStatus::Expired;
+                storage::pending_expiry_index_remove(&env, proposal_id);
                 storage::set_proposal(&env, &proposal);
                 storage::metrics_on_expiry(&env);
                 events::emit_proposal_expired(&env, proposal_id, proposal.expires_at);
@@ -8831,6 +8857,7 @@ impl VaultDAO {
 
             proposal.gas_used = fee_estimate.total_fee;
             proposal.status = ProposalStatus::Executed;
+            storage::pending_expiry_index_remove(&env, proposal_id);
             storage::set_proposal(&env, &proposal);
 
             events::emit_proposal_executed(
@@ -11978,6 +12005,7 @@ impl VaultDAO {
 
         // Update proposal status
         proposal.status = ProposalStatus::Executed;
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &proposal);
         storage::extend_instance_ttl(&env);
         Ok(())
@@ -14935,6 +14963,7 @@ impl VaultDAO {
             Ok(_) => {
                 // Execution successful - transition to Executed
                 proposal.status = ProposalStatus::Executed;
+                storage::pending_expiry_index_remove(&env, proposal_id);
                 storage::set_proposal(&env, &proposal);
 
                 // Return insurance if any
@@ -15010,6 +15039,7 @@ impl VaultDAO {
 
         // Transition to Cancelled
         proposal.status = ProposalStatus::Cancelled;
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &proposal);
 
         let current_ledger = env.ledger().sequence() as u64;
@@ -15143,6 +15173,7 @@ impl VaultDAO {
 
         proposal.status = ProposalStatus::Expired;
         storage::tag_index_prune_proposal(&env, &proposal.tags, proposal_id);
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &proposal);
         events::emit_proposal_expired(&env, proposal_id, proposal.expires_at);
 
@@ -15966,6 +15997,7 @@ impl VaultDAO {
         proposal.status = ProposalStatus::Executed;
 
         storage::set_cross_vault_proposal(&env, proposal_id, &cv);
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &proposal);
 
         events::emit_cross_vault_executed(&env, proposal_id, &executor, success_count);
@@ -16965,6 +16997,7 @@ impl VaultDAO {
         proposal.status = ProposalStatus::Executed;
 
         storage::set_cross_chain_proposal(env, proposal_id, &cv);
+        storage::pending_expiry_index_remove(env, proposal_id);
         storage::set_proposal(env, &proposal);
         storage::extend_instance_ttl(env);
 
@@ -17195,6 +17228,7 @@ impl VaultDAO {
 
         // Mark proposal as executed
         proposal.status = ProposalStatus::Executed;
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &proposal);
         storage::create_audit_entry(&env, AuditAction::ExecuteProposal, &executor, proposal_id);
 
@@ -17687,6 +17721,7 @@ impl VaultDAO {
 
         base.status = ProposalStatus::Executed;
         base.execution_ledger = env.ledger().sequence() as u64;
+        storage::pending_expiry_index_remove(&env, proposal_id);
         storage::set_proposal(&env, &base);
         storage::set_multi_phase_proposal(&env, &mp);
 
@@ -18951,6 +18986,11 @@ impl VaultDAO {
                     // Check if proposal exceeds current spending limit
                     if proposal.amount > config.spending_limit {
                         if auto_cancel {
+                            // Auto-cancel the proposal
+                            let mut p = proposal.clone();
+                            p.status = ProposalStatus::Cancelled;
+                            storage::pending_expiry_index_remove(&env, proposal_id);
+                            storage::set_proposal(&env, &p);
                             // Auto-cancel the proposal through the shared
                             // cancellation path so refunds, records, and events
                             // stay consistent with a normal cancellation.

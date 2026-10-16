@@ -598,6 +598,160 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_expire_scan_cost_proportional_to_pending() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, signer1, _signer2, _contract_id) = setup_vault();
+
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        StellarAssetClient::new(&env, &token).mint(&admin, &1_000_000);
+        let recipient = Address::generate(&env);
+
+        // Create many proposals that will be settled (executed) so they are not Pending.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100;
+        });
+        for _ in 0..20 {
+            let pid = propose_transfer(&env, &client, &signer1, &recipient, &token);
+            client.approve_proposal(&signer1, &pid);
+            client.approve_proposal(&admin, &pid);
+            client.execute_proposal(&signer1, &pid);
+        }
+
+        // Create a few Pending proposals that are due for expiry.
+        let mut pending_ids = std::vec::Vec::new();
+        for _ in 0..3 {
+            let pid = propose_transfer(&env, &client, &signer1, &recipient, &token);
+            pending_ids.push(pid);
+        }
+
+        // Advance far past the expiry of the pending proposals.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 1_000_000;
+        });
+
+        // auto_expire_proposals should only touch the due prefix of Pending
+        // proposals, not the many settled ones.
+        let expired = client.auto_expire_proposals(&admin, &100);
+        assert_eq!(expired, 3);
+
+        for pid in pending_ids {
+            let proposal = client.get_proposal(&pid);
+            assert_eq!(proposal.status, ProposalStatus::Expired);
+        }
+    }
+
+    #[test]
+    fn test_auto_expire_respects_max_scan_bound() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, signer1, _signer2, _contract_id) = setup_vault();
+
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        StellarAssetClient::new(&env, &token).mint(&admin, &1_000_000);
+        let recipient = Address::generate(&env);
+
+        // Create several Pending proposals that are all due for expiry.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100;
+        });
+        let mut pending_ids = std::vec::Vec::new();
+        for _ in 0..5 {
+            let pid = propose_transfer(&env, &client, &signer1, &recipient, &token);
+            pending_ids.push(pid);
+        }
+
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 1_000_000;
+        });
+
+        // With max_scan = 2, only two index entries should be examined/expired.
+        let expired = client.auto_expire_proposals(&admin, &2);
+        assert_eq!(expired, 2);
+
+        // The remaining Pending proposals are still Pending.
+        let mut still_pending = 0u32;
+        for pid in pending_ids.iter() {
+            if client.get_proposal(pid).status == ProposalStatus::Pending {
+                still_pending += 1;
+            }
+        }
+        assert_eq!(still_pending, 3);
+
+        // A subsequent call with a larger bound expires the rest.
+        let expired_rest = client.auto_expire_proposals(&admin, &100);
+        assert_eq!(expired_rest, 3);
+    }
+
+    #[test]
+    fn test_auto_expire_refunds_reservation_and_prunes_tags() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, signer1, _signer2, _contract_id) = setup_vault();
+
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        StellarAssetClient::new(&env, &token).mint(&admin, &1_000_000);
+        let recipient = Address::generate(&env);
+
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100;
+        });
+
+        let mut tags = Vec::new(&env);
+        tags.push_back(Symbol::new(&env, "tag_a"));
+        tags.push_back(Symbol::new(&env, "tag_b"));
+
+        let pid = client.propose_transfer(
+            &signer1,
+            &recipient,
+            &token,
+            &100i128,
+            &Symbol::new(&env, "test"),
+            &Priority::Normal,
+            &tags,
+            &ConditionLogic::And,
+            &0i128,
+        );
+
+        // The proposal reserves spending against daily/weekly and per-token buckets.
+        let reserved_before = client.get_spending_reservation(&pid);
+        assert!(reserved_before > 0);
+
+        // Tags are indexed while the proposal is Pending.
+        let tagged = client.get_proposals_by_tag(&Symbol::new(&env, "tag_a"));
+        assert!(tagged.contains(pid));
+
+        // Advance past expiry and run auto-expire.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 1_000_000;
+        });
+        let expired = client.auto_expire_proposals(&admin, &100);
+        assert_eq!(expired, 1);
+
+        let proposal = client.get_proposal(&pid);
+        assert_eq!(proposal.status, ProposalStatus::Expired);
+
+        // The spending reservation is refunded.
+        let reserved_after = client.get_spending_reservation(&pid);
+        assert_eq!(reserved_after, 0);
+
+        // Tags are pruned from the tag index.
+        let tagged_after = client.get_proposals_by_tag(&Symbol::new(&env, "tag_a"));
+        assert!(!tagged_after.contains(pid));
+        let tagged_after_b = client.get_proposals_by_tag(&Symbol::new(&env, "tag_b"));
+        assert!(!tagged_after_b.contains(pid));
+    }
+
+    #[test]
     #[ignore = "quarantined: unwrap on HostError(Value, InvalidInput) against the current contract (docs/reference/TESTING.md)"]
     fn test_proposal_not_deleted_immediately_on_expiry() {
         let env = Env::default();

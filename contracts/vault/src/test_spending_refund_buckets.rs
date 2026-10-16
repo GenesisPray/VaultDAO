@@ -273,6 +273,52 @@ fn test_rejection_across_week_boundary_refunds_original_week_bucket() {
 }
 
 #[test]
+fn test_auto_expire_across_day_boundary_refunds_original_day_bucket() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    env.ledger().set_timestamp(DAY_SECS * 30);
+    let (client, admin, token, _contract) = setup(&env);
+
+    let amount: i128 = 30_000;
+    let creation_day = env.ledger().timestamp() / DAY_SECS;
+    let creation_week = env.ledger().timestamp() / WEEK_SECS;
+    let proposal_id = propose(&client, &admin, &token, amount);
+
+    assert_eq!(client.get_daily_spent(&creation_day), amount);
+    assert_eq!(client.get_weekly_spent(&creation_week), amount);
+    let proposal = client.get_proposal(&proposal_id);
+    assert!(proposal.has_spend_buckets);
+    assert_eq!(proposal.spend_day, creation_day);
+    assert_eq!(proposal.spend_week, creation_week);
+
+    // Advance past the approval timeout
+    env.ledger().set_timestamp(DAY_SECS * 31);
+    let expire_day = env.ledger().timestamp() / DAY_SECS;
+    assert_ne!(creation_day, expire_day);
+
+    client.auto_expire_proposals(&admin, &10u32);
+
+    // Original buckets must be fully credited back
+    assert_eq!(
+        client.get_daily_spent(&creation_day),
+        0,
+        "auto-expire must credit the creation-day bucket"
+    );
+    assert_eq!(
+        client.get_weekly_spent(&creation_week),
+        0,
+        "auto-expire must credit the creation-week bucket"
+    );
+    // Current buckets must not receive an unearned credit
+    assert_eq!(
+        client.get_daily_spent(&expire_day),
+        0,
+        "expire-day bucket must not be credited"
+    );
+}
+
+#[test]
 fn test_proposal_records_spend_buckets_at_creation() {
     let env = Env::default();
     env.mock_all_auths();
