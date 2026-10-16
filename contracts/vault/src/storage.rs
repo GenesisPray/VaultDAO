@@ -402,8 +402,12 @@ pub enum FeatureKey {
     // ---- Dead letter queue helpers ----
     /// Dead letter record by ID -> DeadLetterRecord
     DeadLetter(u64),
-    /// Dead letter count -> u64
+    /// Lifetime dead letter count -> u64
     DeadLetterCount,
+    /// Live (unprocessed) dead letter count -> u64
+    DeadLetterLiveCount,
+    /// Configurable cap on live dead letter entries -> u64
+    DeadLetterCap,
     /// Vault pause state -> PauseState
     PauseState,
     /// Emergency signers list -> Vec<Address>
@@ -1879,6 +1883,55 @@ pub fn refund_spending_limits(env: &Env, amount: i128, spend_day: u64, spend_wee
     try_deduct_daily_spent(env, spend_day, amount);
     try_deduct_weekly_spent(env, spend_week, amount);
 }
+
+/// Commit a proposal's reserved spend from the pending counters into the
+/// executed counters.
+///
+/// On successful execution the amount that was reserved against the pending
+/// daily/weekly (and per-token) buckets must be moved into the executed
+/// buckets so that reporting reflects actual spend, while the pending
+/// counters are decremented by the same amount.
+///
+/// The pending counters are decremented using the atomic `try_deduct_*`
+/// helpers so they can never underflow, and the executed counters are
+/// credited via the corresponding `add_*` helpers.
+pub fn commit_pending_to_executed(env: &Env, proposal: &Proposal) {
+    let amount = proposal.amount;
+    if amount <= 0 {
+        return;
+    }
+
+    let spend_day = proposal.spend_day;
+    let spend_week = proposal.spend_week;
+
+    // Move global daily/weekly pending spend into executed spend.
+    try_deduct_daily_spent(env, spend_day, amount);
+    try_deduct_weekly_spent(env, spend_week, amount);
+    add_daily_spent(env, spend_day, amount);
+    add_weekly_spent(env, spend_week, amount);
+
+    // Move per-token pending spend into executed spend when a token is set.
+    if let Some(token) = proposal.token.clone() {
+        let current_daily = get_token_daily_spent(env, &token, spend_day);
+        let refunded_daily = current_daily.saturating_sub(amount).max(0);
+        let key_daily = DataKey::TokenDailySpent(token.clone(), spend_day);
+        env.storage().temporary().set(&key_daily, &refunded_daily);
+        env.storage()
+            .temporary()
+            .extend_ttl(&key_daily, DAY_IN_LEDGERS * 2, DAY_IN_LEDGERS * 2);
+
+        let current_weekly = get_token_weekly_spent(env, &token, spend_week);
+        let refunded_weekly = current_weekly.saturating_sub(amount).max(0);
+        let key_weekly = DataKey::TokenWeeklySpent(token.clone(), spend_week);
+        env.storage().temporary().set(&key_weekly, &refunded_weekly);
+        env.storage()
+            .temporary()
+            .extend_ttl(&key_weekly, DAY_IN_LEDGERS * 14, DAY_IN_LEDGERS * 14);
+
+        add_token_daily_spent(env, &token, spend_day, amount);
+        add_token_weekly_spent(env, &token, spend_week, amount);
+    }
+}
 // ============================================================================
 // Comments
 // ============================================================================
@@ -2958,6 +3011,11 @@ pub fn set_dead_letter(env: &Env, record: &DeadLetterRecord) {
         .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 }
 
+/// Default maximum number of live (unprocessed) dead-letter entries.
+pub const DEAD_LETTER_CAP: u64 = 50;
+
+/// Lifetime counter of dead letters ever enqueued (kept for backward
+/// compatibility; not used for cap enforcement).
 pub fn get_dead_letter_count(env: &Env) -> u64 {
     env.storage()
         .persistent()
@@ -2971,6 +3029,55 @@ pub fn increment_dead_letter_count(env: &Env) -> u64 {
         .persistent()
         .set(&FeatureKey::DeadLetterCount, &count);
     count
+}
+
+/// Number of dead-letter entries currently awaiting processing.
+pub fn get_dead_letter_live_count(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&FeatureKey::DeadLetterLiveCount)
+        .unwrap_or(0)
+}
+
+pub fn increment_dead_letter_live_count(env: &Env) -> u64 {
+    let count = get_dead_letter_live_count(env) + 1;
+    env.storage()
+        .persistent()
+        .set(&FeatureKey::DeadLetterLiveCount, &count);
+    count
+}
+
+pub fn decrement_dead_letter_live_count(env: &Env) {
+    let count = get_dead_letter_live_count(env).saturating_sub(1);
+    env.storage()
+        .persistent()
+        .set(&FeatureKey::DeadLetterLiveCount, &count);
+}
+
+/// Remove a dead-letter entry and decrement the live count.
+pub fn remove_dead_letter(env: &Env, id: u64) {
+    if env
+        .storage()
+        .persistent()
+        .has(&FeatureKey::DeadLetter(id))
+    {
+        env.storage()
+            .persistent()
+            .remove(&FeatureKey::DeadLetter(id));
+        decrement_dead_letter_live_count(env);
+    }
+}
+
+/// Configured cap on live dead-letter entries.
+pub fn get_dead_letter_cap(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&FeatureKey::DeadLetterCap)
+        .unwrap_or(DEAD_LETTER_CAP)
+}
+
+pub fn set_dead_letter_cap(env: &Env, cap: u64) {
+    env.storage().instance().set(&FeatureKey::DeadLetterCap, &cap);
 }
 
 // ============================================================================

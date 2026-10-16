@@ -265,6 +265,9 @@ paused_test!(test_paused_blocks_cancel_vesting, |s| s
 paused_test!(test_paused_blocks_execute_multi_phase_proposal, |s| s
     .client
     .try_execute_multi_phase_proposal(&s.admin, &1));
+paused_test!(test_paused_blocks_reject_proposal, |s| s
+    .client
+    .try_reject_proposal(&s.admin, &1));
 
 #[test]
 fn test_unpause_restores_guarded_entry_points() {

@@ -368,3 +368,232 @@ fn test_cancellation_refunds_insurance_that_rejection_slashes() {
         INSURANCE_BURN
     );
 }
+
+// ============================================================================
+// Rejection voting semantics
+// ============================================================================
+
+/// A proposal with `threshold` signers, so a single reject vote is not enough.
+///
+/// Returns `(client, admin, proposer, other_signer, token, contract_id)`.
+fn setup_with_threshold(
+    env: &Env,
+    threshold: u32,
+    insurance: InsuranceConfig,
+    staking: StakingConfig,
+) -> (
+    VaultDAOClient<'_>,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(env, &contract_id);
+
+    let admin = Address::generate(env);
+    let proposer = Address::generate(env);
+    let other = Address::generate(env);
+    let token_admin = Address::generate(env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    let mut signers = Vec::new(env);
+    signers.push_back(admin.clone());
+    signers.push_back(proposer.clone());
+    signers.push_back(other.clone());
+
+    client.initialize(
+        &admin,
+        &InitConfig {
+            veto_window_ledgers: 0,
+            whitelist_mode: false,
+            grace_period_ledgers: 100,
+            vote_weight: crate::types::VoteWeight::Flat,
+            high_impact_threshold: 70,
+            admin_rotation_delay: 1440,
+            signers,
+            threshold,
+            quorum: 0,
+            quorum_percentage: 0,
+            default_voting_deadline: 0,
+            spending_limit: 10_000_000,
+            daily_limit: 50_000_000,
+            weekly_limit: 100_000_000,
+            timelock_threshold: 9_999_999,
+            timelock_delay: 0,
+            velocity_limit: VelocityConfig {
+                limit: 1000,
+                window: 3600,
+                per_token_limit: 0,
+            },
+            threshold_strategy: ThresholdStrategy::Fixed,
+            pre_execution_hooks: Vec::new(env),
+            post_execution_hooks: Vec::new(env),
+            veto_addresses: Vec::new(env),
+            retry_config: RetryConfig {
+                max_retry_delay: 0,
+                enabled: false,
+                max_retries: 0,
+                initial_backoff_ledgers: 0,
+            },
+            recovery_config: crate::types::RecoveryConfig::default(env),
+            staking_config: staking.clone(),
+            proposal_id_prefix: 0,
+        },
+    );
+
+    client.set_role(&admin, &proposer, &Role::Treasurer);
+    client.update_staking_config(&admin, &staking);
+    client.set_insurance_config(&admin, &insurance);
+
+    (client, admin, proposer, other, token, contract_id)
+}
+
+#[test]
+fn test_non_snapshot_signer_cannot_reject() {
+    let env = Env::default();
+    let (client, _admin, proposer, _other, token, cid) =
+        setup_with_threshold(&env, 1, insurance_config(true, 30), staking_config(false, 10));
+    let (id, _) = escrowed_proposal(&env, &client, &proposer, &token, &cid);
+
+    // A signer added after the proposal snapshot is not eligible to vote.
+    let late = Address::generate(&env);
+    client.set_role(&_admin, &late, &Role::Treasurer);
+
+    let res = client.try_reject_proposal(&late, &id, &Symbol::new(&env, "no"));
+    assert!(res.is_err(), "a non-snapshot signer cannot reject");
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
+}
+
+#[test]
+fn test_single_reject_vote_does_not_reject_when_threshold_above_one() {
+    let env = Env::default();
+    let (client, _admin, proposer, other, token, cid) =
+        setup_with_threshold(&env, 2, insurance_config(true, 30), staking_config(false, 10));
+    let (id, _) = escrowed_proposal(&env, &client, &proposer, &token, &cid);
+
+    client.reject_proposal(&other, &id, &Symbol::new(&env, "nope"));
+
+    assert_eq!(
+        client.get_proposal(&id).status,
+        ProposalStatus::Pending,
+        "one reject vote is below the threshold"
+    );
+    assert_eq!(
+        client.get_insurance_pool_balance(&token),
+        0,
+        "no slashing before the rejection threshold is met"
+    );
+}
+
+#[test]
+fn test_rejection_threshold_reached_transitions_to_rejected() {
+    let env = Env::default();
+    let (client, admin, proposer, other, token, cid) =
+        setup_with_threshold(&env, 2, insurance_config(true, 30), staking_config(false, 10));
+    let (id, _) = escrowed_proposal(&env, &client, &proposer, &token, &cid);
+
+    client.reject_proposal(&other, &id, &Symbol::new(&env, "nope"));
+    client.reject_proposal(&admin, &id, &Symbol::new(&env, "nope"));
+
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Rejected);
+}
+
+#[test]
+fn test_rejection_blocked_while_paused() {
+    let env = Env::default();
+    let (client, admin, proposer, other, token, cid) =
+        setup_with_threshold(&env, 1, insurance_config(true, 30), staking_config(false, 10));
+    let (id, _) = escrowed_proposal(&env, &client, &proposer, &token, &cid);
+
+    client.pause(&admin);
+
+    let res = client.try_reject_proposal(&other, &id, &Symbol::new(&env, "nope"));
+    assert!(res.is_err(), "rejection is blocked while paused");
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
+}
+
+#[test]
+fn test_rejection_refunds_spending_buckets() {
+    let env = Env::default();
+    let (client, admin, proposer, other, token, cid) =
+        setup_with_threshold(&env, 1, insurance_config(true, 30), staking_config(false, 10));
+    let (id, _) = escrowed_proposal(&env, &client, &proposer, &token, &cid);
+
+    let daily_before = client.get_daily_spent(&token);
+    let weekly_before = client.get_weekly_spent(&token);
+
+    client.reject_proposal(&other, &id, &Symbol::new(&env, "nope"));
+
+    assert_eq!(
+        client.get_daily_spent(&token),
+        daily_before,
+        "the daily bucket is refunded on rejection"
+    );
+    assert_eq!(
+        client.get_weekly_spent(&token),
+        weekly_before,
+        "the weekly bucket is refunded on rejection"
+    );
+}
+
+#[test]
+fn test_rejection_prunes_tags_from_index() {
+    let env = Env::default();
+    let (client, admin, proposer, other, token, cid) =
+        setup_with_threshold(&env, 1, insurance_config(true, 30), staking_config(false, 10));
+
+    StellarAssetClient::new(&env, &token).mint(&cid, &AMOUNT);
+    StellarAssetClient::new(&env, &token).mint(&proposer, &(INSURANCE + STAKE));
+
+    let tag = Symbol::new(&env, "tagged");
+    let mut tags = Vec::new(&env);
+    tags.push_back(tag.clone());
+
+    let id = client.propose_transfer(
+        &proposer,
+        &Address::generate(&env),
+        &token,
+        &AMOUNT,
+        &Symbol::new(&env, "test"),
+        &Priority::Normal,
+        &tags,
+        &ConditionLogic::And,
+        &INSURANCE,
+    );
+
+    assert!(
+        !client.get_proposals_by_tag(&tag).is_empty(),
+        "the tag is indexed while the proposal is live"
+    );
+
+    client.reject_proposal(&other, &id, &Symbol::new(&env, "nope"));
+
+    assert!(
+        client.get_proposals_by_tag(&tag).is_empty(),
+        "the tag is pruned from the index on rejection"
+    );
+}
+
+#[test]
+fn test_slashes_only_when_rejection_threshold_met() {
+    let env = Env::default();
+    let (client, admin, proposer, other, token, cid) =
+        setup_with_threshold(&env, 2, insurance_config(true, 30), staking_config(true, 10));
+    let (id, _) = escrowed_proposal(&env, &client, &proposer, &token, &cid);
+
+    // First reject vote: below threshold, nothing is slashed.
+    client.reject_proposal(&other, &id, &Symbol::new(&env, "nope"));
+    assert_eq!(client.get_insurance_pool_balance(&token), 0);
+    assert_eq!(client.get_stake_pool_balance(&token), 0);
+
+    // Second reject vote reaches the threshold and triggers both penalties.
+    client.reject_proposal(&admin, &id, &Symbol::new(&env, "nope"));
+    assert_eq!(client.get_insurance_pool_balance(&token), INSURANCE_BURN);
+    assert_eq!(client.get_stake_pool_balance(&token), 10);
+}
