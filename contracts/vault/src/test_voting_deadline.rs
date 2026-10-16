@@ -255,6 +255,90 @@ fn test_abstain_one_past_deadline_returns_error() {
     assert_eq!(proposal.status, ProposalStatus::Rejected);
 }
 
+// ---------------------------------------------------------------------------
+// Test 6 — Past `expires_at`: approve_proposal returns Ok(()) and marks Expired
+//
+// When the current ledger is past the proposal's `expires_at`, the proposal is
+// no longer votable.  The call must return Ok(()) (not an error) and the
+// proposal must end up Expired with no approval recorded.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_approve_past_expiry_marks_expired_without_recording_vote() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Proposal created at ledger 1000 with voting_deadline = 1000 + 10 = 1010
+    let (client, signer, proposal_id) = setup_vault_with_deadline_proposal(&env, 1000, 10);
+
+    let expires_at = client.get_proposal(&proposal_id).expires_at;
+    assert!(
+        expires_at > 0,
+        "proposal must have a non-zero expires_at for this test"
+    );
+
+    // Advance past expiry
+    env.ledger().set_sequence_number(expires_at + 1);
+
+    let result = client.try_approve_proposal(&signer, &proposal_id);
+    assert!(
+        result.is_ok(),
+        "approve_proposal past expires_at must return Ok(())"
+    );
+
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(
+        proposal.status,
+        ProposalStatus::Expired,
+        "proposal must be Expired when past expires_at"
+    );
+    assert_eq!(
+        proposal.approvals.len(),
+        0,
+        "no approval must be recorded when past expires_at"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7 — Past `expires_at`: abstain_proposal returns Ok(()) and marks Expired
+//
+// Same as Test 6 but for abstentions.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_abstain_past_expiry_marks_expired_without_recording_vote() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Proposal created at ledger 1000 with voting_deadline = 1000 + 10 = 1010
+    let (client, signer, proposal_id) = setup_vault_with_deadline_proposal(&env, 1000, 10);
+
+    let expires_at = client.get_proposal(&proposal_id).expires_at;
+    assert!(
+        expires_at > 0,
+        "proposal must have a non-zero expires_at for this test"
+    );
+
+    // Advance past expiry
+    env.ledger().set_sequence_number(expires_at + 1);
+
+    let result = client.try_abstain_proposal(&signer, &proposal_id);
+    assert!(
+        result.is_ok(),
+        "abstain_proposal past expires_at must return Ok(())"
+    );
+
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(
+        proposal.status,
+        ProposalStatus::Expired,
+        "proposal must be Expired when past expires_at"
+    );
+    assert_eq!(
+        proposal.abstentions.len(),
+        0,
+        "no abstention must be recorded when past expires_at"
+    );
+}
+
 // ===========================================================================
 // Preservation Tests — Property 2
 //

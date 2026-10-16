@@ -1856,7 +1856,8 @@ impl VaultDAO {
 
         let current_ledger = env.ledger().sequence() as u64;
         if proposal.expires_at > 0 && current_ledger > proposal.expires_at {
-            return Err(VaultError::ProposalExpired);
+            Self::expire_proposal_internal(&env, &mut proposal, current_ledger);
+            return Ok(());
         }
         if proposal.voting_deadline == 0 || current_ledger > proposal.voting_deadline {
             return Err(VaultError::ProposalExpired);
