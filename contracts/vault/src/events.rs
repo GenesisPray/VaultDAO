@@ -164,6 +164,26 @@ pub fn emit_delegated_vote(
     );
 }
 
+/// Emit when a delegated vote is skipped for a voter.
+///
+/// # Arguments
+/// * `proposal_id` - The proposal the delegated vote applied to.
+/// * `voter` - The skipped voter (the delegator whose vote was skipped).
+/// * `signer` - The acting signer (the delegate) that skipped the vote.
+/// * `reason` - Why the vote was skipped, e.g. `abstained` or `approved`.
+pub fn emit_delegated_vote_skipped(
+    env: &Env,
+    proposal_id: u64,
+    voter: &Address,
+    signer: &Address,
+    reason: &Symbol,
+) {
+    env.events().publish(
+        (Symbol::new(env, "delegated_vote_skipped"), proposal_id),
+        (voter.clone(), signer.clone(), reason.clone()),
+    );
+}
+
 pub fn emit_proposal_scheduled(
     env: &Env,
     proposal_id: u64,
@@ -181,6 +201,28 @@ pub fn emit_proposal_rejected(env: &Env, proposal_id: u64, rejector: &Address, p
     env.events().publish(
         (Symbol::new(env, "proposal_rejected"), proposal_id),
         (rejector.clone(), proposer.clone()),
+    );
+}
+
+/// Emit when a signer casts a rejection vote, tracking progress toward the
+/// rejection threshold.
+///
+/// Topics: `("proposal_rejection_vote", proposal_id)`
+/// Data:   `(voter, rejection_vote_count, required_threshold)`
+///
+/// `rejection_vote_count` is the cumulative number of rejection votes recorded
+/// for the proposal after this vote; `required_threshold` is the number of
+/// rejection votes needed to reject the proposal outright.
+pub fn emit_proposal_rejection_vote(
+    env: &Env,
+    proposal_id: u64,
+    voter: &Address,
+    rejection_vote_count: u32,
+    required_threshold: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "proposal_rejection_vote"), proposal_id),
+        (voter.clone(), rejection_vote_count, required_threshold),
     );
 }
 
@@ -854,6 +896,18 @@ pub fn emit_dead_letter_processed(env: &Env, record_id: u64, admin: &Address) {
     env.events().publish(
         (Symbol::new(env, "dead_letter_proc"), record_id),
         admin.clone(),
+    );
+}
+
+pub fn emit_dead_letter_requeued(
+    env: &Env,
+    record_id: u64,
+    proposal_id: u64,
+    admin: &Address,
+) {
+    env.events().publish(
+        (Symbol::new(env, "dead_letter_requeued"), record_id),
+        (proposal_id, admin.clone()),
     );
 }
 
@@ -2111,6 +2165,20 @@ pub fn emit_proposal_auto_cancelled_limit_exceeded(
     );
 }
 
+/// Emit a summary of a batch auto-cancellation of proposals.
+///
+/// Published once per batch so indexers can observe the full set of proposals
+/// that were cancelled together, along with the total count.
+///
+/// Topics: `("proposals_auto_cancelled",)`
+/// Data:   `(cancelled_ids, count)`
+pub fn emit_proposals_auto_cancelled_summary(env: &Env, cancelled_ids: Vec<u64>, count: u32) {
+    env.events().publish(
+        (Symbol::new(env, "proposals_auto_cancelled"),),
+        (cancelled_ids, count),
+    );
+}
+
 /// Emit when a signer's rolling participation rate has stayed below
 /// `Config.min_participation_rate` for `Config.low_participation_consecutive_proposals`
 /// proposals in a row (Issue #1093).
@@ -2431,6 +2499,13 @@ pub fn emit_vesting_cancelled(
 ///
 /// Topics: `("phase_executed", proposal_id)`
 /// Data:   `(phase_index, executor, ledger)`
+// Phase Execution Events
+// ============================================================================
+
+/// Emit when a proposal phase executes successfully.
+///
+/// Topics: `("phase_executed", proposal_id)`
+/// Data:   `(phase_index, status, error_code)`
 pub fn emit_phase_executed(
     env: &Env,
     proposal_id: u64,
@@ -2448,16 +2523,31 @@ pub fn emit_phase_executed(
 ///
 /// Topics: `("phase_failed", proposal_id)`
 /// Data:   `(phase_index, executor, error_code)`
+    status: u32,
+    error_code: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "phase_executed"), proposal_id),
+        (phase_index, status, error_code),
+    );
+}
+
+/// Emit when a proposal phase fails.
+///
+/// Topics: `("phase_failed", proposal_id)`
+/// Data:   `(phase_index, status, error_code)`
 pub fn emit_phase_failed(
     env: &Env,
     proposal_id: u64,
     phase_index: u32,
     executor: &Address,
+    status: u32,
     error_code: u32,
 ) {
     env.events().publish(
         (Symbol::new(env, "phase_failed"), proposal_id),
         (phase_index, executor.clone(), error_code),
+        (phase_index, status, error_code),
     );
 }
 
