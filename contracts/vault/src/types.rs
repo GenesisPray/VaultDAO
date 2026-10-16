@@ -3136,6 +3136,23 @@ pub struct HookRegistration {
 }
 
 // ============================================================================
+// Pagination
+// ============================================================================
+
+/// Maximum number of items returned by a single paginated query.
+pub const MAX_PAGE_LIMIT: u32 = 50;
+
+/// Cursor-based pagination parameters for list queries.
+///
+/// `start_after_id` is exclusive: results begin at the first item whose ID is
+/// strictly greater than this value. Use `0` to start from the beginning.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaginationCursor {
+    /// Return items with an ID strictly greater than this value (0 = from start).
+    pub start_after_id: u64,
+    /// Maximum number of items to return (capped at `MAX_PAGE_LIMIT`).
+    pub limit: u32,
 // Pending Reservation Exposure
 // ============================================================================
 
