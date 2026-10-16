@@ -90,14 +90,19 @@ pub fn emit_proposal_ready(env: &Env, proposal_id: u64, unlock_ledger: u64) {
     );
 }
 
-/// Emit when a proposal is executed (enhanced: includes token and ledger)
+/// Emit when a proposal is executed (enhanced: includes token and ledger).
+///
+/// Publishes both `net_amount` (what the recipient actually received) and
+/// `fee_amount` (what was withheld) so off-chain observers can distinguish
+/// the gross payout from the net payout without replaying fee logic.
 pub fn emit_proposal_executed(
     env: &Env,
     proposal_id: u64,
     executor: &Address,
     recipient: &Address,
     token: &Address,
-    amount: i128,
+    net_amount: i128,
+    fee_amount: i128,
     ledger: u64,
 ) {
     env.events().publish(
@@ -106,7 +111,8 @@ pub fn emit_proposal_executed(
             executor.clone(),
             recipient.clone(),
             token.clone(),
-            amount,
+            net_amount,
+            fee_amount,
             ledger,
         ),
     );

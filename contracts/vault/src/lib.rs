@@ -1144,13 +1144,15 @@ impl VaultDAO {
                 proposal.approvals.len(),
                 1,
             );
+            let auto_exec_fee = Self::calculate_execution_fee(&env, &proposal).total_fee;
             events::emit_proposal_executed(
                 &env,
                 proposal_id,
                 &proposer,
                 &recipient,
                 &token_addr,
-                amount,
+                amount.saturating_sub(auto_exec_fee),
+                auto_exec_fee,
                 current_ledger,
             );
             storage::create_audit_entry(&env, AuditAction::ApproveProposal, &proposer, proposal_id);
@@ -2342,7 +2344,8 @@ impl VaultDAO {
                     &executor,
                     &proposal.recipient,
                     &proposal.token,
-                    proposal.amount,
+                    proposal.amount.saturating_sub(proposal.gas_used),
+                    proposal.gas_used,
                     current_ledger,
                 );
 
@@ -4875,6 +4878,7 @@ impl VaultDAO {
             &proposal.recipient,
             &proposal.token,
             proposal.amount,
+            0,
             current_ledger,
         );
         events::emit_pool_withdrawn(
@@ -9001,6 +9005,7 @@ impl VaultDAO {
                 &proposal.recipient,
                 &proposal.token,
                 proposal.amount,
+                0,
                 current_ledger,
             );
             Self::update_reputation_on_execution(&env, &proposal);
@@ -15122,6 +15127,7 @@ impl VaultDAO {
                     &proposal.recipient,
                     &proposal.token,
                     proposal.amount,
+                    0,
                     current_ledger,
                 );
 
