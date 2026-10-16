@@ -243,6 +243,48 @@ pub fn emit_proposal_explicit_rejection(
     );
 }
 
+/// Emit each time a rejection vote is accumulated on a proposal, before the
+/// proposal has necessarily reached its final rejected state.
+///
+/// This lets indexers observe partial rejection progress (how many rejection
+/// votes have been cast so far and how many are still needed) rather than only
+/// seeing the terminal `proposal_rejected` transition.
+///
+/// Topics: `("proposal_rejection_vote", proposal_id)`
+/// Data:   `(rejector, rejection_count, rejection_threshold)`
+pub fn emit_proposal_rejection_vote(
+    env: &Env,
+    proposal_id: u64,
+    rejector: &Address,
+    rejection_count: u32,
+    rejection_threshold: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "proposal_rejection_vote"), proposal_id),
+        (rejector.clone(), rejection_count, rejection_threshold),
+    );
+}
+
+/// Emit when a proposal transitions into its final rejected state as a result
+/// of accumulated rejection votes.
+///
+/// Distinct from `emit_proposal_rejection_vote` so indexers can tell the final
+/// rejection transition apart from intermediate rejection-vote progress.
+///
+/// Topics: `("proposal_rejection_final", proposal_id)`
+/// Data:   `(rejection_count, rejection_threshold)`
+pub fn emit_proposal_rejection_final(
+    env: &Env,
+    proposal_id: u64,
+    rejection_count: u32,
+    rejection_threshold: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "proposal_rejection_final"), proposal_id),
+        (rejection_count, rejection_threshold),
+    );
+}
+
 /// Emit when a proposal is cancelled with a refund
 pub fn emit_proposal_cancelled(
     env: &Env,

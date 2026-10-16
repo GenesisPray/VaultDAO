@@ -1803,11 +1803,16 @@ impl VaultDAO {
 
     /// Explicitly reject a pending proposal.
     ///
-    /// Any current signer may call this to immediately reject a `Pending` proposal
-    /// (Issue #1522). This mirrors the rejection semantics used when an Admin cancels
-    /// another proposer's proposal via `cancel_proposal`: the reserved spending limits
-    /// are NOT refunded, insurance/stake slashing on rejection is applied, and an audit
-    /// entry plus a `proposal_rejected` event are recorded.
+    /// Any current signer may call this to register a rejection vote on a
+    /// `Pending` proposal (Issue #1522). A single rejection no longer
+    /// immediately rejects the proposal: rejection votes accumulate and the
+    /// proposal only transitions to `Rejected` once a quorum of distinct
+    /// rejecters is reached. Until then the proposal stays `Pending` and the
+    /// rejection vote is recorded.
+    ///
+    /// On final rejection the reserved spending limits are refunded, the tag
+    /// index is pruned, and insurance/stake slashing on rejection is applied.
+    /// An audit entry plus a `proposal_rejected` event are recorded.
     ///
     /// # Arguments
     /// * `signer` - Address of the signer rejecting the proposal (must authorize).
@@ -1815,15 +1820,73 @@ impl VaultDAO {
     pub fn reject_proposal(env: Env, signer: Address, proposal_id: u64) -> Result<(), VaultError> {
         signer.require_auth();
 
+        // Reject if vault is paused
+        if storage::get_pause_state(&env).is_paused {
+            return Err(VaultError::VaultPaused);
+        }
+
         let config = storage::get_config(&env)?;
         if !config.signers.contains(&signer) {
             return Err(VaultError::NotASigner);
         }
 
         let mut proposal = storage::get_proposal(&env, proposal_id)?;
+
+        // Voter must have been a signer at proposal creation
+        if !proposal.snapshot_signers.contains(&signer) {
+            return Err(VaultError::VoterNotInSnapshot);
+        }
+
         if proposal.status != ProposalStatus::Pending {
             return Err(VaultError::ProposalNotPending);
         }
+
+        // Record the rejection vote (idempotent for repeat callers).
+        if !proposal.rejections.contains(&signer) {
+            proposal.rejections.push_back(signer.clone());
+        }
+        let rejection_count = proposal.rejections.len();
+
+        // Determine the rejection quorum: an explicit configured quorum takes
+        // precedence, otherwise fall back to the approval threshold.
+        let required_rejections = if config.quorum > 0 {
+            config.quorum
+        } else {
+            config.threshold
+        };
+
+        // Not enough distinct rejecters yet: leave the proposal Pending and
+        // just persist the accumulated rejection vote.
+        if rejection_count < required_rejections {
+            storage::set_proposal(&env, &proposal);
+            storage::extend_instance_ttl(&env);
+            storage::create_audit_entry(&env, AuditAction::RejectProposal, &signer, proposal_id);
+
+            events::emit_proposal_explicit_rejection(
+                &env,
+                proposal_id,
+                &signer,
+                rejection_count,
+            );
+
+            return Ok(());
+        }
+
+        // Final rejection: refund reservations, prune the tag index, then slash.
+        storage::refund_spending_limits(
+            &env,
+            proposal.amount,
+            proposal.spend_day,
+            proposal.spend_week,
+        );
+        storage::refund_token_spending_limits(
+            &env,
+            &proposal.token,
+            proposal.amount,
+            proposal.spend_day,
+            proposal.spend_week,
+        );
+        storage::tag_index_prune_proposal(&env, &proposal.tags, proposal_id);
 
         proposal.status = ProposalStatus::Rejected;
         storage::pending_expiry_index_remove(&env, proposal_id);
@@ -1840,7 +1903,7 @@ impl VaultDAO {
             &env,
             proposal_id,
             &signer,
-            metrics.rejected_count,
+            rejection_count,
         );
 
         Ok(())

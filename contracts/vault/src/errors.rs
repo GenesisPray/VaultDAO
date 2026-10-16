@@ -512,6 +512,12 @@ pub enum VaultError {
     // Issue #1748: Storage schema versioning
     /// Stored schema version does not match this contract build; call `migrate`
     SchemaVersionMismatch = 1140,
+
+    // =========================================================
+    // Issue #1750: change_vote deadline distinction
+    // =========================================================
+    /// Voting window for the proposal has already closed
+    VotingClosed = 1141,
     // Dead-letter queue capacity
     /// Dead-letter queue has reached its maximum capacity
     DeadLetterQueueFull = 1141,
