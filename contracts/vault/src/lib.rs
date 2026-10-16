@@ -5914,16 +5914,43 @@ impl VaultDAO {
         Ok((quorum_votes, required_quorum, quorum_reached))
     }
 
-    /// Return proposal IDs that are currently executable.
+    /// Return proposal IDs that are currently executable (paginated).
     ///
     /// A proposal is considered executable when it is approved, not expired,
     /// timelock has elapsed, and all dependencies have been executed.
-    pub fn get_executable_proposals(env: Env) -> Vec<u64> {
+    ///
+    /// Candidates are sourced from the `StatusIndex(Approved)` index rather
+    /// than scanning `1..next_id`, so the cost scales with the number of
+    /// approved proposals instead of the total number ever created.
+    ///
+    /// # Arguments
+    /// * `start_after_id` - Cursor: only proposals with an ID strictly greater
+    ///   than this are considered. Pass `0` to start from the beginning.
+    /// * `limit` - Maximum number of IDs to return (capped at 50).
+    pub fn get_executable_proposals(env: Env, start_after_id: u64, limit: u32) -> Vec<u64> {
+        const MAX_EXECUTABLE_RESULTS: u32 = 50;
+        let cap = if limit == 0 || limit > MAX_EXECUTABLE_RESULTS {
+            MAX_EXECUTABLE_RESULTS
+        } else {
+            limit
+        };
+
         let mut executable = Vec::new(&env);
         let current_ledger = env.ledger().sequence() as u64;
-        let next_id = storage::get_next_proposal_id(&env);
 
-        for proposal_id in 1..next_id {
+        let candidates = storage::get_all_proposals_by_status_uncapped(
+            &env,
+            ProposalStatus::Approved as u32,
+        );
+
+        for proposal_id in candidates.iter() {
+            if executable.len() >= cap {
+                break;
+            }
+            if proposal_id <= start_after_id {
+                continue;
+            }
+
             let proposal = match storage::get_proposal(&env, proposal_id) {
                 Ok(p) => p,
                 Err(_) => continue,

@@ -180,6 +180,12 @@ pub enum VaultError {
     /// Multi-phase proposal not found
     MultiPhaseProposalNotFound = 622,
 
+    /// A phase's amount is invalid (zero, or exceeds the phase/proposal limit)
+    PhaseAmountInvalid = 623,
+
+    /// A phase's recipient is not permitted (not whitelisted or blacklisted)
+    PhaseRecipientNotAllowed = 624,
+
     // =========================================================
     // Issue #1097: Capability Tokens
     // =========================================================
