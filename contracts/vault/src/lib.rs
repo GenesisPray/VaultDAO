@@ -2435,6 +2435,54 @@ impl VaultDAO {
         Ok(())
     }
 
+    /// Requeue a dead-lettered proposal for another execution attempt (Admin only).
+    ///
+    /// Resets the proposal's retry state so it can be retried from scratch, and
+    /// restores it to `Approved` if it had been expired when it was dead-lettered.
+    /// The dead-letter record is removed and the live dead-letter count is
+    /// decremented so the queue does not stay permanently full.
+    pub fn requeue_dead_letter(
+        env: Env,
+        admin: Address,
+        record_id: u64,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        let role = storage::get_role(&env, &admin);
+        if !Role::role_satisfies(Role::Admin, role) {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let record =
+            storage::get_dead_letter(&env, record_id).ok_or(VaultError::ProposalNotFound)?;
+
+        // Reset the retry state so the proposal can be retried from scratch.
+        let retry_state = RetryState {
+            retry_count: 0,
+            next_retry_ledger: 0,
+            last_retry_ledger: 0,
+        };
+        storage::set_retry_state(&env, record.proposal_id, &retry_state);
+
+        // Restore the proposal to Approved if it was expired when dead-lettered.
+        let mut proposal = storage::get_proposal(&env, record.proposal_id)?;
+        if proposal.status == ProposalStatus::Expired {
+            proposal.status = ProposalStatus::Approved;
+            storage::set_proposal(&env, &proposal);
+        }
+
+        // Remove the dead-letter record and decrement the live count.
+        storage::remove_dead_letter(&env, record_id);
+        let count = storage::get_dead_letter_count(&env);
+        storage::set_dead_letter_count(&env, count.saturating_sub(1));
+
+        storage::extend_instance_ttl(&env);
+
+        events::emit_dead_letter_requeued(&env, record_id, record.proposal_id, &admin);
+
+        Ok(())
+    }
+
     /// Group existing proposals into a batch for atomic execution.
     ///
     /// `batch_propose_transfers` only ever creates dependency-free proposals, so this

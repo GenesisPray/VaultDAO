@@ -293,6 +293,102 @@ mod tests {
     }
 
     // ========================================================================
+    // dead-letter queue tests
+    // ========================================================================
+
+    /// Maximum number of unprocessed dead-letter entries the queue holds.
+    const DEAD_LETTER_CAP: u32 = 50;
+
+    fn make_dead_letter(env: &Env, proposal_id: u64) -> types::DeadLetterEntry {
+        types::DeadLetterEntry {
+            proposal_id,
+            reason: Symbol::new(env, "exhausted"),
+            failed_at_ledger: env.ledger().sequence() as u64,
+            retry_count: 3,
+        }
+    }
+
+    #[test]
+    fn test_dead_letter_cap_enforced() {
+        let (env, contract_id, _client, _admin, _s1, _s2, _token) = setup_vault_with_retry();
+
+        // Fill the dead-letter queue to capacity with unprocessed entries.
+        env.as_contract(&contract_id, || {
+            for i in 0..DEAD_LETTER_CAP {
+                let entry = make_dead_letter(&env, i as u64);
+                storage::push_dead_letter(&env, &entry).unwrap();
+            }
+        });
+
+        // The queue is now full: further exhausted proposals must be rejected
+        // with DeadLetterQueueFull and must not be recorded.
+        let overflow = make_dead_letter(&env, 999u64);
+        let res = env.as_contract(&contract_id, || storage::push_dead_letter(&env, &overflow));
+        assert_eq!(res, Err(crate::errors::VaultError::DeadLetterQueueFull));
+
+        // The overflowing entry was not recorded.
+        let stored = env.as_contract(&contract_id, || {
+            storage::get_dead_letter(&env, 999u64)
+        });
+        assert!(stored.is_none());
+
+        // Queue length is unchanged.
+        let len = env.as_contract(&contract_id, || storage::dead_letter_len(&env));
+        assert_eq!(len, DEAD_LETTER_CAP);
+    }
+
+    #[test]
+    fn test_process_dead_letter_frees_capacity() {
+        let (env, contract_id, _client, _admin, _s1, _s2, _token) = setup_vault_with_retry();
+
+        // Fill the queue to capacity.
+        env.as_contract(&contract_id, || {
+            for i in 0..DEAD_LETTER_CAP {
+                let entry = make_dead_letter(&env, i as u64);
+                storage::push_dead_letter(&env, &entry).unwrap();
+            }
+        });
+
+        // Confirm the queue is full.
+        let overflow = make_dead_letter(&env, 1000u64);
+        let res = env.as_contract(&contract_id, || storage::push_dead_letter(&env, &overflow));
+        assert_eq!(res, Err(crate::errors::VaultError::DeadLetterQueueFull));
+
+        // Process (remove) one entry, freeing a slot.
+        env.as_contract(&contract_id, || {
+            storage::process_dead_letter(&env, 0u64).unwrap();
+        });
+
+        let len = env.as_contract(&contract_id, || storage::dead_letter_len(&env));
+        assert_eq!(len, DEAD_LETTER_CAP - 1);
+
+        // A new exhausted proposal can now be recorded.
+        let res = env.as_contract(&contract_id, || storage::push_dead_letter(&env, &overflow));
+        assert_eq!(res, Ok(()));
+
+        let stored = env.as_contract(&contract_id, || {
+            storage::get_dead_letter(&env, 1000u64)
+        });
+        assert!(stored.is_some());
+    }
+
+    #[test]
+    fn test_requeue_dead_letter_resets_retry_state() {
+        let (env, contract_id, client, admin, _s1, _s2, _token) = setup_vault_with_retry();
+
+        let proposal_id = 42u64;
+
+        // Seed a dead-letter entry for the proposal.
+        env.as_contract(&contract_id, || {
+            let entry = make_dead_letter(&env, proposal_id);
+            storage::push_dead_letter(&env, &entry).unwrap();
+        });
+
+        // Seed an exhausted retry state for the same proposal.
+        let retry_state = types::RetryState {
+            retry_count: 3,
+            next_retry_ledger: 0,
+            last_retry_ledger: 0,
     // Failed multi-phase execution must leave an observable audit trail (#899)
     // ========================================================================
 
@@ -317,6 +413,51 @@ mod tests {
             storage::set_retry_state(&env, proposal_id, &retry_state)
         });
 
+        // Requeue: admin-only operation.
+        client.requeue_dead_letter(&admin, &proposal_id);
+
+        // Retry state is reset (cleared or zeroed) so the proposal can be retried.
+        let stored = env.as_contract(&contract_id, || {
+            storage::get_retry_state(&env, proposal_id)
+        });
+        match stored {
+            None => {}
+            Some(state) => assert_eq!(state.retry_count, 0),
+        }
+
+        // The proposal is returned to the execution queue.
+        let queued = env.as_contract(&contract_id, || {
+            storage::is_in_execution_queue(&env, proposal_id)
+        });
+        assert!(queued);
+
+        // The dead-letter entry has been removed.
+        let dl = env.as_contract(&contract_id, || {
+            storage::get_dead_letter(&env, proposal_id)
+        });
+        assert!(dl.is_none());
+    }
+
+    #[test]
+    fn test_requeue_dead_letter_rejects_non_admin() {
+        let (env, contract_id, client, _admin, signer1, _s2, _token) = setup_vault_with_retry();
+
+        let proposal_id = 7u64;
+
+        env.as_contract(&contract_id, || {
+            let entry = make_dead_letter(&env, proposal_id);
+            storage::push_dead_letter(&env, &entry).unwrap();
+        });
+
+        // A non-admin signer must be rejected.
+        let res = client.try_requeue_dead_letter(&signer1, &proposal_id);
+        assert_eq!(res, Err(Ok(crate::errors::VaultError::Unauthorized)));
+
+        // The entry remains in the dead-letter queue.
+        let dl = env.as_contract(&contract_id, || {
+            storage::get_dead_letter(&env, proposal_id)
+        });
+        assert!(dl.is_some());
         // Attempt the retry. Whether it succeeds or errors, the call must not
         // silently swallow the failure without persisting observable state.
         let res = client.try_retry_execute_proposal(&admin, &proposal_id);

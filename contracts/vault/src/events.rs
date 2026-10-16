@@ -879,6 +879,18 @@ pub fn emit_dead_letter_processed(env: &Env, record_id: u64, admin: &Address) {
     );
 }
 
+pub fn emit_dead_letter_requeued(
+    env: &Env,
+    record_id: u64,
+    proposal_id: u64,
+    admin: &Address,
+) {
+    env.events().publish(
+        (Symbol::new(env, "dead_letter_requeued"), record_id),
+        (proposal_id, admin.clone()),
+    );
+}
+
 // ============================================================================
 // Subscription Events (feature/subscription-system)
 // ============================================================================
