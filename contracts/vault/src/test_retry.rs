@@ -293,6 +293,135 @@ mod tests {
     }
 
     // ========================================================================
+    // Retry exhaustion / dead-letter tests (#899)
+    // ========================================================================
+
+    /// Build a proposal in `Approved` status with a spending reservation so we
+    /// can drive it past `max_retries` and observe the terminal effects.
+    fn setup_approved_proposal_with_reservation(
+        env: &Env,
+        contract_id: &Address,
+        client: &VaultDAOClient<'static>,
+        admin: &Address,
+        token: &Address,
+    ) -> u64 {
+        let proposal_id = client.propose_transfer(
+            admin,
+            &soroban_sdk::vec![env, admin.clone()],
+            token,
+            &1_000_000i128,
+            &Address::generate(env),
+            &0u64,
+        );
+
+        // Approve so the proposal reaches Approved status.
+        client.approve_proposal(admin, &proposal_id);
+
+        // Reserve spending against the daily/weekly and per-token buckets.
+        env.as_contract(contract_id, || {
+            storage::reserve_spending(env, token, 1_000_000i128);
+        });
+
+        proposal_id
+    }
+
+    #[test]
+    fn test_retry_exhaustion_marks_expired_and_dead_letters() {
+        let (env, contract_id, client, admin, _s1, _s2, token) = setup_vault_with_retry();
+
+        let proposal_id =
+            setup_approved_proposal_with_reservation(&env, &contract_id, &client, &admin, &token);
+
+        // Drive retries until the max is exceeded.
+        let max_retries = 3u32;
+        for _ in 0..max_retries {
+            let _ = client.try_retry_execute_proposal(&admin, &proposal_id);
+        }
+
+        // (1) Proposal status must be Expired.
+        let proposal = env.as_contract(&contract_id, || {
+            storage::get_proposal(&env, proposal_id)
+        });
+        assert!(proposal.is_some());
+        assert_eq!(proposal.unwrap().status, types::ProposalStatus::Expired);
+
+        // (2) A DeadLetterRecord must exist for the proposal.
+        let dead_letter = env.as_contract(&contract_id, || {
+            storage::get_dead_letter_record(&env, proposal_id)
+        });
+        assert!(dead_letter.is_some());
+        let dead_letter = dead_letter.unwrap();
+        assert_eq!(dead_letter.proposal_id, proposal_id);
+        assert_eq!(dead_letter.retry_count, max_retries);
+
+        // (3) The `retries_exhausted` event must have been emitted.
+        let events = env.events().all();
+        let mut found = false;
+        for (_, topics, _) in events.iter() {
+            if topics.contains(&Symbol::new(&env, "retries_exhausted")) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "retries_exhausted event was not emitted");
+
+        // (4) The spending reservation must be refunded.
+        let daily_used = env.as_contract(&contract_id, || {
+            storage::get_daily_spent(&env, &token)
+        });
+        let weekly_used = env.as_contract(&contract_id, || {
+            storage::get_weekly_spent(&env, &token)
+        });
+        let token_used = env.as_contract(&contract_id, || {
+            storage::get_per_token_spent(&env, &token)
+        });
+        assert_eq!(daily_used, 0);
+        assert_eq!(weekly_used, 0);
+        assert_eq!(token_used, 0);
+    }
+
+    #[test]
+    fn test_retry_exhaustion_condition_consistent() {
+        let (env, contract_id, client, admin, _s1, _s2, _token) = setup_vault_with_retry();
+
+        let max_retries = 3u32;
+
+        // `schedule_retry` and `retry_execute_proposal` must agree on the
+        // unified `>= max_retries` exhaustion condition.
+        let at_limit = types::RetryState {
+            retry_count: max_retries,
+            next_retry_ledger: 0,
+            last_retry_ledger: 0,
+        };
+        let below_limit = types::RetryState {
+            retry_count: max_retries - 1,
+            next_retry_ledger: 0,
+            last_retry_ledger: 0,
+        };
+
+        let proposal_id = 1u64;
+
+        // At the limit: both paths must treat the proposal as exhausted.
+        env.as_contract(&contract_id, || {
+            storage::set_retry_state(&env, proposal_id, &at_limit)
+        });
+        let schedule_res = env.as_contract(&contract_id, || {
+            storage::schedule_retry(&env, proposal_id)
+        });
+        assert!(schedule_res.is_err());
+        let execute_res = client.try_retry_execute_proposal(&admin, &proposal_id);
+        assert!(execute_res.is_err());
+
+        // Below the limit: both paths must allow another retry.
+        env.as_contract(&contract_id, || {
+            storage::set_retry_state(&env, proposal_id, &below_limit)
+        });
+        let schedule_res = env.as_contract(&contract_id, || {
+            storage::schedule_retry(&env, proposal_id)
+        });
+        assert!(schedule_res.is_ok());
+        let execute_res = client.try_retry_execute_proposal(&admin, &proposal_id);
+        assert!(execute_res.is_ok());
     // dead-letter queue tests
     // ========================================================================
 
