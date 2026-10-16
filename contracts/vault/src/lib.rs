@@ -202,6 +202,8 @@ mod test_pause_and_governed_withdrawals;
 #[cfg(test)]
 mod test_pause_circuit_breaker;
 #[cfg(test)]
+mod test_pending_reservations;
+#[cfg(test)]
 mod test_proposal_expiration;
 #[cfg(test)]
 mod test_proposal_management;
@@ -1055,6 +1057,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &proposal);
@@ -1358,6 +1361,7 @@ impl VaultDAO {
                 spend_week: storage::get_week_number(&env),
                 has_spend_buckets: true,
                 approved_at: 0,
+                rejection_votes: Vec::new(&env),
             };
 
             storage::set_proposal(&env, &proposal);
@@ -1852,7 +1856,8 @@ impl VaultDAO {
 
         let current_ledger = env.ledger().sequence() as u64;
         if proposal.expires_at > 0 && current_ledger > proposal.expires_at {
-            return Err(VaultError::ProposalExpired);
+            Self::expire_proposal_internal(&env, &mut proposal, current_ledger);
+            return Ok(());
         }
         if proposal.voting_deadline == 0 || current_ledger > proposal.voting_deadline {
             return Err(VaultError::ProposalExpired);
@@ -2427,6 +2432,54 @@ impl VaultDAO {
         storage::extend_instance_ttl(&env);
 
         events::emit_dead_letter_processed(&env, record_id, &admin);
+
+        Ok(())
+    }
+
+    /// Requeue a dead-lettered proposal for another execution attempt (Admin only).
+    ///
+    /// Resets the proposal's retry state so it can be retried from scratch, and
+    /// restores it to `Approved` if it had been expired when it was dead-lettered.
+    /// The dead-letter record is removed and the live dead-letter count is
+    /// decremented so the queue does not stay permanently full.
+    pub fn requeue_dead_letter(
+        env: Env,
+        admin: Address,
+        record_id: u64,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        let role = storage::get_role(&env, &admin);
+        if !Role::role_satisfies(Role::Admin, role) {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let record =
+            storage::get_dead_letter(&env, record_id).ok_or(VaultError::ProposalNotFound)?;
+
+        // Reset the retry state so the proposal can be retried from scratch.
+        let retry_state = RetryState {
+            retry_count: 0,
+            next_retry_ledger: 0,
+            last_retry_ledger: 0,
+        };
+        storage::set_retry_state(&env, record.proposal_id, &retry_state);
+
+        // Restore the proposal to Approved if it was expired when dead-lettered.
+        let mut proposal = storage::get_proposal(&env, record.proposal_id)?;
+        if proposal.status == ProposalStatus::Expired {
+            proposal.status = ProposalStatus::Approved;
+            storage::set_proposal(&env, &proposal);
+        }
+
+        // Remove the dead-letter record and decrement the live count.
+        storage::remove_dead_letter(&env, record_id);
+        let count = storage::get_dead_letter_count(&env);
+        storage::set_dead_letter_count(&env, count.saturating_sub(1));
+
+        storage::extend_instance_ttl(&env);
+
+        events::emit_dead_letter_requeued(&env, record_id, record.proposal_id, &admin);
 
         Ok(())
     }
@@ -3789,6 +3842,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &proposal);
@@ -4640,6 +4694,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(env),
         };
 
         storage::set_proposal(env, &proposal);
@@ -9910,6 +9965,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &proposal);
@@ -11825,6 +11881,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &proposal);
@@ -13217,6 +13274,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &proposal);
@@ -15807,6 +15865,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &proposal);
@@ -16789,6 +16848,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &proposal);
@@ -17057,6 +17117,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &proposal);
@@ -17312,6 +17373,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
 
         storage::set_proposal(&env, &new_proposal);
@@ -17483,6 +17545,7 @@ impl VaultDAO {
             spend_week: storage::get_week_number(&env),
             has_spend_buckets: true,
             approved_at: 0,
+            rejection_votes: Vec::new(&env),
         };
         storage::set_proposal(&env, &new_proposal);
 
@@ -17497,13 +17560,23 @@ impl VaultDAO {
         Ok(proposal_id)
     }
 
-    /// Execute a multi-phase proposal. Phases run in order; on failure, rollbacks execute.
+    /// Execute a multi-phase proposal. Phases run in order; on failure the
+    /// base proposal is marked `Rejected` and the outcome is returned as
+    /// `Ok(PhaseExecutionOutcome)` rather than an `Err`.
+    ///
+    /// The host no longer reverts on phase failure, so every attempt is
+    /// persisted: each phase's status is written back (`Executed` / `Failed` /
+    /// `RolledBack`), a `phase_executed` or `phase_failed` event is emitted per
+    /// attempt, and an audit entry is recorded per attempt. Rollback operations
+    /// are only invoked for genuinely reversible off-chain effects; the host no
+    /// longer performs an implicit rollback.
+    ///
     /// The base proposal must be in Approved status.
     pub fn execute_multi_phase_proposal(
         env: Env,
         executor: Address,
         proposal_id: u64,
-    ) -> Result<(), VaultError> {
+    ) -> Result<PhaseExecutionOutcome, VaultError> {
         executor.require_auth();
         require_not_paused(&env)?;
         let role = storage::get_role(&env, &executor);
@@ -17520,61 +17593,102 @@ impl VaultDAO {
             .ok_or(VaultError::MultiPhaseProposalNotFound)?;
 
         let mut failed_at: Option<u32> = None;
+        let mut executed_count: u32 = 0;
 
-        // Execute phases in order
+        // Execute phases in order, persisting each attempt.
         for i in 0..mp.phases.len() {
             let mut phase = mp.phases.get(i).unwrap();
             let result = Self::execute_phase_operation(&env, &executor, &phase.operation);
-            if result.is_ok() {
-                phase.status = ProposalPhaseStatus::Executed;
-                mp.last_executed_phase = i as i32;
-            } else {
-                phase.status = ProposalPhaseStatus::Failed;
-                failed_at = Some(i);
-                mp.phases.set(i, phase);
-                break;
-            }
-            mp.phases.set(i, phase);
-        }
-
-        // If a phase failed, run rollbacks in reverse order
-        if let Some(fail_idx) = failed_at {
-            let rollback_end = if fail_idx == 0 { 0 } else { fail_idx };
-            let mut rb = if rollback_end > 0 {
-                rollback_end - 1
-            } else {
-                0
-            };
-            loop {
-                let mut phase = mp.phases.get(rb).unwrap();
-                if phase.status == ProposalPhaseStatus::Executed {
-                    let rb_result = match &phase.rollback_operation {
-                        OptionalProposalOperation::Some(op) => {
-                            Self::execute_phase_operation(&env, &executor, op)
-                        }
-                        OptionalProposalOperation::None => Ok(()),
-                    };
-                    if rb_result.is_ok() {
-                        phase.status = ProposalPhaseStatus::RolledBack;
-                    }
-                    mp.phases.set(rb, phase);
+            match result {
+                Ok(()) => {
+                    phase.status = ProposalPhaseStatus::Executed;
+                    mp.last_executed_phase = i as i32;
+                    executed_count += 1;
+                    mp.phases.set(i, phase);
+                    storage::set_multi_phase_proposal(&env, &mp);
+                    events::emit_phase_executed(&env, proposal_id, i, &executor);
+                    storage::create_audit_entry(
+                        &env,
+                        AuditAction::ExecuteProposal,
+                        &executor,
+                        proposal_id,
+                    );
                 }
-                if rb == 0 {
+                Err(err) => {
+                    phase.status = ProposalPhaseStatus::Failed;
+                    failed_at = Some(i);
+                    mp.phases.set(i, phase);
+                    storage::set_multi_phase_proposal(&env, &mp);
+                    events::emit_phase_failed(&env, proposal_id, i, err as u32, &executor);
+                    storage::create_audit_entry(
+                        &env,
+                        AuditAction::ExecuteProposal,
+                        &executor,
+                        proposal_id,
+                    );
                     break;
                 }
-                rb -= 1;
             }
+        }
+
+        // If a phase failed, run rollbacks in reverse order for the phases that
+        // already executed. These are only for genuinely reversible off-chain
+        // effects; the host no longer reverts state on failure.
+        if let Some(fail_idx) = failed_at {
+            if fail_idx > 0 {
+                let mut rb = fail_idx - 1;
+                loop {
+                    let mut phase = mp.phases.get(rb).unwrap();
+                    if phase.status == ProposalPhaseStatus::Executed {
+                        let rb_result = match &phase.rollback_operation {
+                            OptionalProposalOperation::Some(op) => {
+                                Self::execute_phase_operation(&env, &executor, op)
+                            }
+                            OptionalProposalOperation::None => Ok(()),
+                        };
+                        if rb_result.is_ok() {
+                            phase.status = ProposalPhaseStatus::RolledBack;
+                            mp.phases.set(rb, phase);
+                            storage::set_multi_phase_proposal(&env, &mp);
+                            events::emit_phase_rolled_back(&env, proposal_id, rb, &executor);
+                            storage::create_audit_entry(
+                                &env,
+                                AuditAction::ExecuteProposal,
+                                &executor,
+                                proposal_id,
+                            );
+                        }
+                    }
+                    if rb == 0 {
+                        break;
+                    }
+                    rb -= 1;
+                }
+            }
+
             base.status = ProposalStatus::Rejected;
             storage::set_proposal(&env, &base);
             storage::set_multi_phase_proposal(&env, &mp);
-            return Err(VaultError::PhaseExecutionFailed);
+
+            return Ok(PhaseExecutionOutcome {
+                proposal_id,
+                executed_count,
+                failed_phase: Some(fail_idx),
+                success: false,
+            });
         }
 
         base.status = ProposalStatus::Executed;
         base.execution_ledger = env.ledger().sequence() as u64;
         storage::set_proposal(&env, &base);
         storage::set_multi_phase_proposal(&env, &mp);
-        Ok(())
+
+        Ok(PhaseExecutionOutcome {
+            proposal_id,
+            executed_count,
+            failed_phase: None,
+            success: true,
+        })
     }
 
     /// Execute a single ProposalOperation for multi-phase proposals
@@ -18785,10 +18899,23 @@ impl VaultDAO {
     // Issue #1353: Spending Limit Recalculation on Config Update
     // ========================================================================
 
-    /// Validate pending proposals for spending limit violations (Admin only)
+    /// Validate pending proposals for spending limit violations (Admin only).
+    ///
+    /// Scans a bounded window of proposals starting at `start_id` (clamped to at
+    /// least 1) and inspects at most `max_count` proposals, so the caller can
+    /// page through large proposal sets without exceeding the compute budget.
+    ///
+    /// When `auto_cancel` is true, any pending proposal whose amount exceeds the
+    /// current `spending_limit` is cancelled via `cancel_proposal_internal` using
+    /// the admin as the canceller and an `exceeds_new_limit` reason. A summary
+    /// event lists the cancelled proposal IDs.
+    ///
+    /// Returns the number of proposals cancelled.
     pub fn validate_limits_pending(
         env: Env,
         admin: Address,
+        start_id: u64,
+        max_count: u32,
         auto_cancel: bool,
     ) -> Result<u32, VaultError> {
         admin.require_auth();
@@ -18799,23 +18926,35 @@ impl VaultDAO {
 
         let config = storage::get_config(&env)?;
         let mut cancelled_count: u32 = 0;
+        let mut cancelled_ids: Vec<u64> = Vec::new(&env);
 
         // Get the next proposal ID to know upper bound
         let next_id = storage::get_next_proposal_id(&env);
 
-        // Iterate through all proposals (gas-intensive, but comprehensive)
-        // In production, consider maintaining a separate pending proposals list
-        for proposal_id in 0..next_id {
+        // Iterate through a bounded window of proposals starting at start_id.
+        let first_id = start_id.max(1);
+        let mut proposal_id = first_id;
+        let mut inspected: u32 = 0;
+
+        while proposal_id < next_id && inspected < max_count {
+            inspected += 1;
+
             if let Ok(proposal) = storage::get_proposal(&env, proposal_id) {
                 if proposal.status == ProposalStatus::Pending {
                     // Check if proposal exceeds current spending limit
                     if proposal.amount > config.spending_limit {
                         if auto_cancel {
-                            // Auto-cancel the proposal
-                            let mut p = proposal.clone();
-                            p.status = ProposalStatus::Cancelled;
-                            storage::set_proposal(&env, &p);
+                            // Auto-cancel the proposal through the shared
+                            // cancellation path so refunds, records, and events
+                            // stay consistent with a normal cancellation.
+                            Self::cancel_proposal_internal(
+                                &env,
+                                &admin,
+                                proposal_id,
+                                Symbol::new(&env, "exceeds_new_limit"),
+                            )?;
                             cancelled_count += 1;
+                            cancelled_ids.push_back(proposal_id);
 
                             events::emit_proposal_auto_cancelled_limit_exceeded(
                                 &env,
@@ -18836,6 +18975,12 @@ impl VaultDAO {
                     }
                 }
             }
+
+            proposal_id += 1;
+        }
+
+        if !cancelled_ids.is_empty() {
+            events::emit_limits_pending_summary(&env, &admin, &cancelled_ids, cancelled_count);
         }
 
         Ok(cancelled_count)

@@ -304,6 +304,28 @@ fn test_tag_index_updated_on_remove() {
     assert_eq!(after.len(), 0);
 }
 
+#[test]
+fn test_tag_index_pruned_on_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, token, vault) = setup(&env);
+    let p1 = create_proposal(&env, &client, &admin, &token, &vault);
+
+    client.add_proposal_tag(&admin, &p1, &Symbol::new(&env, "rejectme"));
+    let before = client.get_proposals_by_tag(&Symbol::new(&env, "rejectme"), &0, &50);
+    assert_eq!(before.len(), 1);
+
+    // Reject the proposal (admin is a signer; threshold is 2, so two rejections).
+    client.reject_proposal(&admin, &p1);
+    client.reject_proposal(&admin, &p1);
+
+    // The rejected proposal's tags must be pruned from the flat tag index.
+    let after = client.get_proposals_by_tag(&Symbol::new(&env, "rejectme"), &0, &50);
+    assert_eq!(after.len(), 0);
+    assert!(!after.contains(p1));
+}
+
 // ============================================================================
 // bulk_add_tags
 // ============================================================================

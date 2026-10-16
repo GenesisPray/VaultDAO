@@ -274,6 +274,9 @@ paused_test!(test_paused_blocks_reject_proposal, |s| s
 paused_test!(test_paused_blocks_change_vote, |s| s
     .client
     .try_change_vote(&s.admin, &1, &true));
+paused_test!(test_paused_blocks_reject_proposal, |s| s
+    .client
+    .try_reject_proposal(&s.admin, &1));
 
 #[test]
 fn test_unpause_restores_guarded_entry_points() {
